@@ -1,0 +1,13 @@
+{
+  "segments": ["model", "dir", "git", "ctx", "glm"],
+  "lang": "zh",
+  "glm": {
+    "platform": "auto",
+    "showBalance": true,
+    "showLevel": true
+  },
+  "cacheTtlSeconds": 60,
+  "staleSeconds": 1800,
+  "timeoutMs": 5000,
+  "contextLimit": 0
+}
