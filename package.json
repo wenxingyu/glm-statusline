@@ -1,0 +1,28 @@
+{
+  "name": "@wenxingyu/glm-statusline",
+  "version": "1.0.0",
+  "description": "Claude Code status line with GLM Coding Plan quota and account balance",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "glm-statusline": "statusline.mjs"
+  },
+  "files": [
+    "statusline.mjs",
+    "glm.mjs",
+    "setup.mjs",
+    "config.json"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "test": "node --test test/glm.test.mjs test/statusline.test.mjs test/setup.test.mjs",
+    "demo": "node statusline.mjs --demo"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wenxingyu/glm-statusline.git"
+  }
+}

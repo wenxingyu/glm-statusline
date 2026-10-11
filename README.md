@@ -10,17 +10,54 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 - `周 88%` — 每周窗口剩余（老套餐无此项，自动隐藏）
 - `¥46.2` — 按量付费账户可用余额（仅国内版；套餐用户可关闭）
 - 剩余 ≤15% 红色、≤40% 黄色，其余绿色
-- 额度查询结果缓存 60 秒，不会拖慢状态栏刷新
+- 额度查询结果缓存 60 秒；缓存未命中时等待接口，超时默认 5 秒
+- 同一账号并发刷新时只发起一组请求，其他调用显示有效缓存或「GLM 刷新中」
+- 查询失败时，有效期内的旧数据标记「缓存」；超过兜底期限后停止显示
 
 ## 安装
 
-在 `~/.claude/settings.json` 中加入：
+需要 Node.js 18.17 或更高版本、npm 和 Git，无第三方运行依赖。
+仓库为私有仓库，安装前需要有访问权限。使用 GitHub CLI 配置 HTTPS 认证：
 
-```json
-"statusLine": {
-  "type": "command",
-  "command": "node \"D:/Code/glm-statusline/statusline.mjs\""
-}
+```bash
+gh auth login
+gh auth setup-git
+```
+
+### 方式一：npx 一键配置（推荐）
+
+```bash
+npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0" glm-statusline --setup
+```
+
+### 方式二：npm 全局安装
+
+```bash
+npm install -g "git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0"
+glm-statusline --setup
+```
+
+这两种方式都从 GitHub 私有仓库下载。包未发布到公共 npm registry，
+因此请使用完整的 Git URL，不要使用 `npx glm-statusline` 或 `npm install -g glm-statusline`。
+Git 安装和 `--package` 的用法见 [npm install 文档](https://docs.npmjs.com/cli/v11/commands/npm-install/)
+与 [npm exec 文档](https://docs.npmjs.com/cli/v11/commands/npm-exec/)。
+
+`--setup` 会：
+
+1. 将运行文件保存到 `~/.claude/glm-statusline/`，状态栏运行时不依赖 npx 缓存或网络下载。
+2. 创建用户配置 `~/.claude/glm-statusline.json`，已有配置保留。
+3. 更新 `~/.claude/settings.json` 中的 `statusLine`，保留其他设置。
+   如需替换已有设置，会先生成 `settings.json.backup-*` 备份。
+
+升级时将安装命令中的版本标签换为新版本，再运行 `--setup` 更新固定目录中的运行文件。
+全局包本身升级不会自动覆盖已部署的运行文件。若 Node.js 安装路径发生变化，也请重新运行 `--setup`。
+
+### 从源码运行
+
+```bash
+git clone https://github.com/wenxingyu/glm-statusline.git
+cd glm-statusline
+node statusline.mjs --setup
 ```
 
 重启 Claude Code（或开新会话）即可生效。API Key 自动读取 `~/.claude/settings.json` 的
@@ -28,7 +65,9 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 
 ## 配置
 
-编辑同目录下的 `config.json`（不写就用默认值）：
+编辑 `~/.claude/glm-statusline.json`。配置优先级为：
+`GLM_STATUSLINE_CONFIG` 指定的文件 → 用户配置 → 包内 `config.json` → 内置默认值。
+仅在文件不存在时继续查找；文件存在但 JSON 无效时使用内置默认值。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -38,19 +77,41 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 | `glm.showBalance` | `true` | 是否查询并显示按量付费余额 |
 | `glm.showLevel` | `true` | 是否显示套餐等级（LITE/PRO/MAX） |
 | `cacheTtlSeconds` | `60` | 额度查询缓存时间 |
-| `staleSeconds` | `1800` | 查询失败时，过期缓存的最长兜底时间 |
+| `staleSeconds` | `1800` | 查询失败时，旧数据距最后成功查询的最大秒数；`0` 禁用失败兜底 |
 | `timeoutMs` | `5000` | 单次请求超时 |
 | `contextLimit` | `0` | 上下文窗口大小，`0` = 按模型自动（200k / 1M） |
+
+可以用环境变量 `GLM_STATUSLINE_CONFIG` 指定其他配置文件。字段类型或范围无效时，
+该字段使用默认值；`segments` 中的未知项会被忽略，重复项去重，空数组表示不显示任何分段。
+`timeoutMs` 必须为正数；缓存时间与上下文窗口必须为非负数。
 
 ## 调试
 
 ```bash
-node statusline.mjs --query   # 真实查询一次，打印解析后的额度 JSON（强制绕过缓存）
-node statusline.mjs --demo    # 用假数据预览状态栏样式
-echo '{"model":{"display_name":"GLM-4.6"}}' | node statusline.mjs   # 模拟 Claude Code 调用
+glm-statusline --help     # 查看命令选项
+glm-statusline --version  # 查看版本
+glm-statusline --query    # 真实查询一次，打印解析后的额度 JSON（强制绕过缓存）
+glm-statusline --demo     # 用假数据预览状态栏样式
+echo '{"model":{"display_name":"GLM-4.6"}}' | glm-statusline
+```
+
+上述命令适用于 npm 全局安装。仅使用 npx 配置时，可以运行：
+
+```bash
+npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0" glm-statusline --demo
 ```
 
 排错时设 `GLM_STATUSLINE_DEBUG=1` 可看完整报错。
+
+## 测试
+
+```bash
+npm test
+npm pack --dry-run
+```
+
+测试使用模拟接口和独立临时目录，覆盖缓存隔离、过期兜底、余额开关、异常数据、
+配置校验、深层目录分支查找、多进程并发刷新和自动安装，不需要真实 API Key。
 
 ## 接口说明
 
@@ -63,4 +124,10 @@ echo '{"model":{"display_name":"GLM-4.6"}}' | node statusline.mjs   # 模拟 Cla
 - 接口为智谱未公开文档的内部接口，参考 [cc-switch](https://github.com/farion1231/cc-switch) 与
   [cc-toolkit](https://github.com/5-seasons/cc-toolkit) 的实现；若上游变更字段，改 `glm.mjs` 的
   `parsePlan` / `parseBalance` 即可
-- 额度缓存写在系统临时目录 `glm-statusline-cache.json`，删除即强制刷新
+- 额度缓存写在系统临时目录的 `glm-statusline-v2/` 下，文件名按平台与 API Key 的
+  SHA-256 哈希隔离，不保存明文 Key。旧版 `glm-statusline-cache.json` 不再读取。
+- 套餐和余额分别记录最后成功时间；失败重试遵守缓存 TTL，但不会延长旧数据的有效期。
+  关闭余额时不查询、不显示余额，国际版也不会尝试余额接口。
+- `--query` 绕过 TTL；若另一个进程正在刷新则返回有效缓存或刷新中状态。
+  JSON 中 `age` 表示展示数据中最旧一项的年龄（毫秒），无数据时为 `-1`，
+  `stale` 表示正在使用旧数据，`partialError` 表示部分请求失败。

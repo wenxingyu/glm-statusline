@@ -3,17 +3,18 @@
 //
 // 用法：
 //   在 ~/.claude/settings.json 中配置：
-//     "statusLine": { "type": "command", "command": "node \"D:/Code/glm-statusline/statusline.mjs\"" }
+//     glm-statusline --setup
 //   Claude Code 会通过 stdin 传入会话 JSON，本脚本向 stdout 输出一行状态栏。
 //
 // 调试：
-//   node statusline.mjs --query   # 立即真实查询一次额度并打印解析结果
-//   node statusline.mjs --demo    # 用假数据预览状态栏样式（无网络请求）
+//   glm-statusline --setup   # 自动配置 Claude Code
+//   glm-statusline --query   # 立即真实查询一次额度并打印解析结果
+//   glm-statusline --demo    # 用假数据预览状态栏样式（无网络请求）
 
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getGlmInfo, PLATFORM_BASE } from './glm.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -46,19 +47,46 @@ const DEFAULTS = {
   contextLimit: 0,        // 上下文窗口，0 = 按模型自动（200k / 1M）
 };
 
+export function normalizeConfig(user) {
+  if (!user || typeof user !== 'object' || Array.isArray(user)) user = {};
+  const glm = user.glm ?? {};
+  const number = (key, min = 0, max = Number.MAX_SAFE_INTEGER) =>
+    Number.isFinite(user[key]) && user[key] >= min && user[key] <= max
+      ? user[key] : DEFAULTS[key];
+  return {
+    segments: Array.isArray(user.segments)
+      ? [...new Set(user.segments.filter((s) => DEFAULTS.segments.includes(s)))]
+      : [...DEFAULTS.segments],
+    lang: ['zh', 'en'].includes(user.lang) ? user.lang : DEFAULTS.lang,
+    glm: {
+      platform: ['auto', 'cn', 'en'].includes(glm.platform) ? glm.platform : DEFAULTS.glm.platform,
+      showBalance: typeof glm.showBalance === 'boolean' ? glm.showBalance : DEFAULTS.glm.showBalance,
+      showLevel: typeof glm.showLevel === 'boolean' ? glm.showLevel : DEFAULTS.glm.showLevel,
+    },
+    cacheTtlSeconds: number('cacheTtlSeconds'),
+    staleSeconds: number('staleSeconds'),
+    timeoutMs: Math.floor(number('timeoutMs', 1, 2_147_483_647)),
+    contextLimit: number('contextLimit'),
+  };
+}
+
 async function loadConfig() {
   const override = process.env.GLM_STATUSLINE_CONFIG;
-  const file = override || path.join(SCRIPT_DIR, 'config.json');
-  try {
-    const user = JSON.parse(await fs.readFile(file, 'utf8'));
-    return {
-      ...DEFAULTS,
-      ...user,
-      glm: { ...DEFAULTS.glm, ...(user.glm ?? {}) },
-    };
-  } catch {
-    return DEFAULTS;
+  const files = override ? [override] : [
+    path.join(os.homedir(), '.claude', 'glm-statusline.json'),
+    path.join(SCRIPT_DIR, 'config.json'),
+  ];
+  for (const file of files) {
+    try {
+      return normalizeConfig(JSON.parse(await fs.readFile(file, 'utf8')));
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        if (process.env.GLM_STATUSLINE_DEBUG) console.error(`读取配置失败：${file}`, e.message);
+        return normalizeConfig({});
+      }
+    }
   }
+  return normalizeConfig({});
 }
 
 // ── API Key / 平台识别 ──────────────────────────────────────
@@ -108,9 +136,9 @@ async function readStdinJson() {
   });
 }
 
-async function gitBranch(cwd) {
-  let dir = cwd;
-  for (let i = 0; i < 5 && dir; i++) {
+export async function gitBranch(cwd) {
+  let dir = path.resolve(cwd);
+  while (dir) {
     const dotGit = path.join(dir, '.git');
     const st = await fs.stat(dotGit).catch(() => null);
     if (st) {
@@ -170,8 +198,10 @@ async function contextTokens(transcriptPath) {
 
 // ── 渲染 ────────────────────────────────────────────────────
 const L = {
-  zh: { week: '周', ctx: 'ctx', noKey: 'GLM 未配置 Key', fail: 'GLM 查询失败' },
-  en: { week: 'wk', ctx: 'ctx', noKey: 'GLM no key', fail: 'GLM query failed' },
+  zh: { week: '周', ctx: 'ctx', noKey: 'GLM 未配置 Key', fail: 'GLM 查询失败',
+    stale: '缓存', partial: '部分查询失败', refreshing: 'GLM 刷新中' },
+  en: { week: 'wk', ctx: 'ctx', noKey: 'GLM no key', fail: 'GLM query failed',
+    stale: 'cached', partial: 'partial failure', refreshing: 'GLM refreshing' },
 };
 
 function fmtCountdown(resetMs) {
@@ -202,10 +232,31 @@ function fmtBalance(n) {
   return `¥${s}`;
 }
 
+export function renderGlm(info, config, platform) {
+  const t = L[config.lang] ?? L.zh;
+  const chunks = [];
+  if (config.glm.showLevel && info.level) chunks.push(paint(info.level.toUpperCase(), C.yellow));
+  const five = quotaPart('5h', info.five);
+  if (five) chunks.push(five);
+  const weekly = quotaPart(t.week, info.weekly);
+  if (weekly) chunks.push(weekly);
+  if (config.glm.showBalance && platform === 'cn' && info.balance != null) {
+    chunks.push(paint(fmtBalance(info.balance), C.green));
+  }
+  if (!chunks.length) {
+    if (info.refreshing) return paint(t.refreshing, C.dim);
+    return paint(`${t.fail}: ${info.error || info.partialError || '无数据'}`, C.red);
+  }
+  if (info.stale) chunks.push(paint(t.stale, C.yellow));
+  else if (info.partialError) chunks.push(paint(t.partial, C.yellow));
+  return chunks.join(paint(' · ', C.dim));
+}
+
 async function render(input, config) {
+  if (!input || typeof input !== 'object') input = {};
   const t = L[config.lang] ?? L.zh;
   const cwd = input.workspace?.current_dir || input.cwd || process.cwd();
-  const env = await loadClaudeSettingsEnv();
+  const env = config.segments.includes('glm') && !config._demo ? await loadClaudeSettingsEnv() : {};
   const key = resolveKey(env);
   const platform = resolvePlatform(config, env);
   const parts = {};
@@ -243,12 +294,10 @@ async function render(input, config) {
         if (config._demo) {
           // 假数据预览，无网络请求
           const now = Date.now();
-          parts.glm = [
-            paint('PRO', C.yellow),
-            quotaPart('5h', { usedPct: 38, resetMs: now + 132 * 60000 }),
-            quotaPart(t.week, { usedPct: 12, resetMs: now + 82 * 3600000 }),
-            paint('¥46.2', C.green),
-          ].join(paint(' · ', C.dim));
+          parts.glm = renderGlm({ level: 'pro',
+            five: { usedPct: 38, resetMs: now + 132 * 60000 },
+            weekly: { usedPct: 12, resetMs: now + 82 * 3600000 }, balance: 46.2,
+          }, config, platform);
           break;
         }
         if (!key) {
@@ -263,24 +312,7 @@ async function render(input, config) {
           staleSec: config.staleSeconds,
           timeoutMs: config.timeoutMs,
         });
-        const chunks = [];
-        if (config.glm.showLevel && info.level) {
-          chunks.push(paint(info.level.toUpperCase(), C.yellow));
-        }
-        const five = quotaPart('5h', info.five);
-        if (five) chunks.push(five);
-        const weekly = quotaPart(t.week, info.weekly);
-        if (weekly) chunks.push(weekly);
-        if (info.balance != null) chunks.push(paint(fmtBalance(info.balance), C.green));
-        if (chunks.length) {
-          parts.glm = chunks.join(paint(' · ', C.dim));
-          if (info.partialError && !info.five && !info.balance) {
-            // 理论不可达，防御：无任何数据时显示错误
-            parts.glm = paint(`${t.fail}: ${info.partialError}`, C.red);
-          }
-        } else {
-          parts.glm = paint(`${t.fail}: ${info.error}`, C.red);
-        }
+        parts.glm = renderGlm(info, config, platform);
         break;
       }
     }
@@ -291,6 +323,39 @@ async function render(input, config) {
 
 // ── 入口 ────────────────────────────────────────────────────
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`glm-statusline — Claude Code 的 GLM 额度状态栏
+
+用法：glm-statusline [选项]
+
+  --setup       安装运行文件并配置 Claude Code（已有设置自动备份）
+  --demo        使用假数据预览，不请求接口
+  --query       强制查询并输出 JSON
+  --version     显示版本
+  --help        显示帮助
+
+无选项时从 stdin 读取 Claude Code 会话 JSON，输出一行状态栏。
+用户配置：~/.claude/glm-statusline.json
+也可通过 GLM_STATUSLINE_CONFIG 指定配置文件。`);
+    return;
+  }
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(JSON.parse(await fs.readFile(path.join(SCRIPT_DIR, 'package.json'), 'utf8')).version);
+    return;
+  }
+  if (args.some((arg) => !['--setup', '--demo', '--query'].includes(arg)) || args.length > 1) {
+    throw new Error('请每次使用一个选项；运行 glm-statusline --help 查看用法');
+  }
+  if (args.includes('--setup')) {
+    const { setup } = await import('./setup.mjs');
+    const result = await setup();
+    console.log(`已配置 Claude Code：${result.settingsPath}`);
+    console.log(`用户配置：${result.configPath}`);
+    if (result.backupPath) console.log(`原设置备份：${result.backupPath}`);
+    console.log('重启 Claude Code 或开启新会话即可生效。');
+    return;
+  }
   const config = await loadConfig();
 
   if (process.argv.includes('--demo')) {
@@ -317,6 +382,7 @@ async function main() {
       platform,
       showBalance: config.glm.showBalance,
       ttlSec: 0, // 强制刷新
+      staleSec: config.staleSeconds,
       timeoutMs: config.timeoutMs,
       force: true,
     });
@@ -329,7 +395,13 @@ async function main() {
   if (line) console.log(line);
 }
 
-main().catch((e) => {
+const entryPath = process.argv[1] && await fs.realpath(process.argv[1]).catch(() => path.resolve(process.argv[1]));
+if (entryPath && import.meta.url === pathToFileURL(entryPath).href) main().catch((e) => {
+  if (process.argv.length > 2) {
+    console.error(e.message);
+    process.exitCode = 1;
+    return;
+  }
   // 状态栏脚本绝不能抛错——最坏情况输出一行占位
   console.log(paint('glm-statusline', C.dim));
   if (process.env.GLM_STATUSLINE_DEBUG) console.error(e);
