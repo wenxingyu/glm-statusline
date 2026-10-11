@@ -2,6 +2,8 @@
 
 Claude Code 底部状态栏插件：实时显示智谱 GLM 剩余额度（Coding Plan 套餐 + 按量付费余额）。
 
+支持 Windows、Linux 和 macOS；纯 Node.js 实现，无原生扩展。
+
 ```
 GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h) · ¥46.2
 ```
@@ -17,6 +19,17 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 ## 安装
 
 需要 Node.js 18.17 或更高版本、npm 和 Git，无第三方运行依赖。
+
+| 系统 | 安装终端 | 默认用户配置 |
+|---|---|---|
+| Windows | PowerShell、CMD 或 Git Bash | `%USERPROFILE%\.claude\glm-statusline.json` |
+| Linux | Bash 等终端 | `~/.claude/glm-statusline.json` |
+| macOS | Zsh 或 Bash | `~/.claude/glm-statusline.json` |
+
+下方安装命令三端通用。Windows PowerShell 若限制 `npm.ps1` 执行，可使用
+`npm.cmd` / `npx.cmd` / `glm-statusline.cmd`。使用 WSL 时，请在 WSL 内安装 Node.js
+并运行安装命令，使配置和运行文件位于 WSL 用户目录。
+
 仓库为私有仓库，安装前需要有访问权限。使用 GitHub CLI 配置 HTTPS 认证：
 
 ```bash
@@ -27,13 +40,13 @@ gh auth setup-git
 ### 方式一：npx 一键配置（推荐）
 
 ```bash
-npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0" glm-statusline --setup
+npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1" glm-statusline --setup
 ```
 
 ### 方式二：npm 全局安装
 
 ```bash
-npm install -g "git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0"
+npm install -g "git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1"
 glm-statusline --setup
 ```
 
@@ -98,7 +111,7 @@ echo '{"model":{"display_name":"GLM-4.6"}}' | glm-statusline
 上述命令适用于 npm 全局安装。仅使用 npx 配置时，可以运行：
 
 ```bash
-npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0" glm-statusline --demo
+npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1" glm-statusline --demo
 ```
 
 排错时设 `GLM_STATUSLINE_DEBUG=1` 可看完整报错。
@@ -107,11 +120,18 @@ npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.0"
 
 ```bash
 npm test
+npm run test:install
 npm pack --dry-run
 ```
 
 测试使用模拟接口和独立临时目录，覆盖缓存隔离、过期兜底、余额开关、异常数据、
 配置校验、深层目录分支查找、多进程并发刷新和自动安装，不需要真实 API Key。
+
+GitHub Actions 在 Windows、Ubuntu 和 macOS 上分别使用 Node.js 18.17.0 与 24
+运行回归测试和安装测试。安装测试实际执行打包、全局安装、npm exec（npx 的执行机制）、
+隔离用户目录下的 `--setup`，并通过系统 Shell 执行生成的状态栏命令。
+Unix 还验证符号链接入口与特殊字符路径；macOS 额外验证 Zsh，Windows 检测到 Git Bash 时也会验证。
+查看 [跨平台测试结果](https://github.com/wenxingyu/glm-statusline/actions/workflows/test.yml)。
 
 ## 接口说明
 

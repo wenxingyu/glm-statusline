@@ -361,7 +361,7 @@ async function main() {
   if (process.argv.includes('--demo')) {
     const fake = {
       model: { display_name: 'GLM-4.6' },
-      workspace: { current_dir: path.join('D:', 'Code', 'glm-statusline') },
+      workspace: { current_dir: process.cwd() },
     };
     const line = await render(fake, { ...config, _demo: true });
     console.log(line);

@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setup } from '../setup.mjs';
+
+const { version } = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
 async function temp(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-setup-test-'));
@@ -31,7 +33,7 @@ test('setup preserves existing settings, backs them up and deploys a working sta
     encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath },
   });
   assert.match(demo, /5h 62%/);
-  assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8' }).trim(), '1.0.0');
+  assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8' }).trim(), version);
 });
 
 test('setup initializes a new configuration and repeat setup preserves user preferences', async (t) => {
@@ -76,5 +78,32 @@ test('npm-style symlink entry points execute the CLI', { skip: process.platform 
   await fs.mkdir(claudeDir, { recursive: true });
   const link = path.join(claudeDir, 'glm-statusline');
   await fs.symlink(fileURLToPath(new URL('../statusline.mjs', import.meta.url)), link);
-  assert.equal(execFileSync(process.execPath, [link, '--version'], { encoding: 'utf8' }).trim(), '1.0.0');
+  assert.equal(execFileSync(process.execPath, [link, '--version'], { encoding: 'utf8' }).trim(), version);
+});
+
+test('generated statusLine command handles spaces and apostrophes and receives stdin through the native shell', async (t) => {
+  const claudeDir = path.join(await temp(t), "user's workspace");
+  const result = await setup({ claudeDir });
+  await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'dir'] }));
+  const { statusLine } = JSON.parse(await fs.readFile(result.settingsPath, 'utf8'));
+  const input = JSON.stringify({ model: { display_name: 'Cross-platform' }, cwd: claudeDir });
+  const options = { encoding: 'utf8', input, timeout: 10_000,
+    env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath } };
+  const output = execSync(statusLine.command, options);
+  assert.match(output, /Cross-platform/);
+  assert.ok(output.includes("user's workspace"));
+  if (process.platform === 'win32') {
+    const bash = path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git', 'bin', 'bash.exe');
+    try { await fs.access(bash); } catch { return; }
+    assert.match(execFileSync(bash, ['--noprofile', '--norc', '-c', statusLine.command], options), /Cross-platform/);
+  } else if (process.platform === 'darwin') {
+    assert.match(execFileSync('/bin/zsh', ['-f', '-c', statusLine.command], options), /Cross-platform/);
+  }
+});
+
+test('POSIX installation paths preserve literal shell metacharacters', { skip: process.platform === 'win32' }, async (t) => {
+  const claudeDir = path.join(await temp(t), 'user $HOME `uname` "quoted"');
+  const result = await setup({ claudeDir });
+  const { statusLine } = JSON.parse(await fs.readFile(result.settingsPath, 'utf8'));
+  assert.equal(execSync(`${statusLine.command} --version`, { encoding: 'utf8', timeout: 10_000 }).trim(), version);
 });
