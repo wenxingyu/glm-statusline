@@ -30,12 +30,7 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 `npm.cmd` / `npx.cmd` / `glm-statusline.cmd`。使用 WSL 时，请在 WSL 内安装 Node.js
 并运行安装命令，使配置和运行文件位于 WSL 用户目录。
 
-仓库为私有仓库，安装前需要有访问权限。使用 GitHub CLI 配置 HTTPS 认证：
-
-```bash
-gh auth login
-gh auth setup-git
-```
+仓库公开，无需 GitHub 账号或认证即可使用下方命令安装。
 
 ### 方式一：npx 一键配置（推荐）
 
@@ -50,7 +45,7 @@ npm install -g "git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1"
 glm-statusline --setup
 ```
 
-这两种方式都从 GitHub 私有仓库下载。包未发布到公共 npm registry，
+这两种方式都从 GitHub 公共仓库下载。包未发布到公共 npm registry，
 因此请使用完整的 Git URL，不要使用 `npx glm-statusline` 或 `npm install -g glm-statusline`。
 Git 安装和 `--package` 的用法见 [npm install 文档](https://docs.npmjs.com/cli/v11/commands/npm-install/)
 与 [npm exec 文档](https://docs.npmjs.com/cli/v11/commands/npm-exec/)。
