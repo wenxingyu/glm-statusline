@@ -11,6 +11,7 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 - `5h 62%` — Coding Plan 5 小时窗口**剩余**百分比，`(2h12m)` 为重置倒计时
 - `周 88%` — 每周窗口剩余（老套餐无此项，自动隐藏）
 - `¥46.2` — 按量付费账户可用余额（仅国内版；套餐用户可关闭）
+- `ctx 87%` — 上下文**剩余**比例；`ctx ~87%` 为历史估算，`ctx --` 表示暂无可靠数据
 - 剩余 ≤15% 红色、≤40% 黄色，其余绿色
 - 额度查询结果缓存 60 秒；缓存未命中时等待接口，超时默认 5 秒
 - 同一账号并发刷新时只发起一组请求，其他调用显示有效缓存或「GLM 刷新中」
@@ -85,11 +86,18 @@ node statusline.mjs --setup
 | `cacheTtlSeconds` | `60` | 额度查询缓存时间 |
 | `staleSeconds` | `1800` | 查询失败时，旧数据距最后成功查询的最大秒数；`0` 禁用失败兜底 |
 | `timeoutMs` | `5000` | 单次请求超时 |
-| `contextLimit` | `0` | 上下文窗口大小，`0` = 按模型自动（200k / 1M） |
+| `contextLimit` | `0` | 上下文窗口大小，`0` = 优先使用 Claude Code 上报值，缺失时按模型自动（200k / 1M） |
 
 可以用环境变量 `GLM_STATUSLINE_CONFIG` 指定其他配置文件。字段类型或范围无效时，
 该字段使用默认值；`segments` 中的未知项会被忽略，重复项去重，空数组表示不显示任何分段。
 `timeoutMs` 必须为正数；缓存时间与上下文窗口必须为非负数。
+
+上下文优先使用 Claude Code 的 `context_window.used_percentage` / `remaining_percentage`，
+其次由 `current_usage` 的输入与缓存 token 计算，不计输出 token；显式设置 `contextLimit` 时按该窗口重算。
+恢复会话时，当前进程尚未收到 API 响应，实时用量可能为 `null`，此时从 transcript 尾部最近的主会话
+assistant 用量估算，并以 `~` 标记。最多检查尾部 4 MiB；没有可靠记录或遇到 `/compact` 边界时显示 `ctx --`，
+不把未知数据当作 0%。历史记录不代表精确的实时用量，收到新的 API 响应后自动切换回实时值。
+字段含义见 [Claude Code 官方文档](https://code.claude.com/docs/en/statusline#context-window-fields)。
 
 ## 调试
 

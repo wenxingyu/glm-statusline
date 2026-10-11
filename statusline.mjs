@@ -44,7 +44,7 @@ const DEFAULTS = {
   cacheTtlSeconds: 60,    // 额度查询缓存时间
   staleSeconds: 1800,     // 查询失败时过期缓存最长可用时间
   timeoutMs: 5000,        // 单次请求超时
-  contextLimit: 0,        // 上下文窗口，0 = 按模型自动（200k / 1M）
+  contextLimit: 0,        // 上下文窗口，0 = 优先使用 Claude Code 上报值
 };
 
 export function normalizeConfig(user) {
@@ -166,34 +166,73 @@ export async function gitBranch(cwd) {
   return null;
 }
 
-// 从 transcript 尾部取最近一次 assistant 用量，估算当前上下文 token 数
+const tokenFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+const nonnegative = (n) => Number.isFinite(n) && n >= 0;
+
+function inputTokens(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const values = tokenFields.map((key) => usage[key]);
+  if (!values.some(nonnegative) || values.some((n) => n != null && !nonnegative(n))) return null;
+  const total = values.reduce((sum, n) => sum + (n ?? 0), 0);
+  return Number.isFinite(total) ? total : null;
+}
+
+// 仅作历史估算；逐步扩大读取范围，最多读尾部 4 MiB，不越过压缩边界。
 async function contextTokens(transcriptPath) {
-  if (!transcriptPath) return null;
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   const fh = await fs.open(transcriptPath, 'r').catch(() => null);
   if (!fh) return null;
   try {
     const { size } = await fh.stat();
-    const len = Math.min(size, 128 * 1024);
-    if (len === 0) return null;
-    const buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const u = JSON.parse(lines[i])?.message?.usage;
-        if (u) {
-          return (
-            (u.input_tokens || 0) +
-            (u.cache_read_input_tokens || 0) +
-            (u.cache_creation_input_tokens || 0)
-          );
-        }
-      } catch { /* 尾部截断的半行 JSON，跳过 */ }
+    const max = Math.min(size, 4 * 1024 * 1024);
+    for (let len = Math.min(max, 128 * 1024); len > 0;) {
+      const start = size - len;
+      const buf = Buffer.alloc(len);
+      let read = 0;
+      while (read < len) {
+        const { bytesRead } = await fh.read(buf, read, len - read, start + read);
+        if (!bytesRead) break;
+        read += bytesRead;
+      }
+      const lines = buf.subarray(0, read).toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= (start > 0 ? 1 : 0); i--) {
+        try {
+          const record = JSON.parse(lines[i]);
+          if (record.isSidechain) continue;
+          if (record.type === 'system' && record.subtype === 'compact_boundary') return null;
+          if (record.type !== 'assistant' && record.message?.role !== 'assistant') continue;
+          const used = inputTokens(record.message?.usage);
+          if (used != null) return used;
+        } catch { /* 截断或尚未写完的 JSON 行，跳过 */ }
+      }
+      if (len === max) break;
+      len = Math.min(max, len * 2);
     }
+  } catch {
+    return null;
   } finally {
     await fh.close().catch(() => {});
   }
   return null;
+}
+
+async function contextUsage(input, config) {
+  const window = input.context_window ?? {};
+  const defaultLimit = /\[1m\]|1m/i.test(input.model?.id || '') ? 1_000_000 : 200_000;
+  const reportedLimit = nonnegative(window.context_window_size) && window.context_window_size > 0
+    ? window.context_window_size : defaultLimit;
+  const limit = config.contextLimit > 0 ? config.contextLimit : reportedLimit;
+  const tokens = inputTokens(window.current_usage);
+  const percentage = nonnegative(window.used_percentage) ? window.used_percentage
+    : nonnegative(window.remaining_percentage) && window.remaining_percentage <= 100
+      ? 100 - window.remaining_percentage : null;
+  // 明确为 null 表示当前进程尚无用量，不能把初始化的 0/100 当作真实值。
+  if (window.current_usage !== null && percentage != null && !(config.contextLimit > 0 && tokens != null)) {
+    return { usedPct: percentage * reportedLimit / limit, estimated: false };
+  }
+  if (tokens != null) return { usedPct: tokens / limit * 100, estimated: false };
+  const historical = await contextTokens(input.transcript_path);
+  return historical == null ? null : { usedPct: historical / limit * 100, estimated: true };
 }
 
 // ── 渲染 ────────────────────────────────────────────────────
@@ -252,7 +291,7 @@ export function renderGlm(info, config, platform) {
   return chunks.join(paint(' · ', C.dim));
 }
 
-async function render(input, config) {
+export async function render(input, config) {
   if (!input || typeof input !== 'object') input = {};
   const t = L[config.lang] ?? L.zh;
   const cwd = input.workspace?.current_dir || input.cwd || process.cwd();
@@ -278,16 +317,13 @@ async function render(input, config) {
         break;
       }
       case 'ctx': {
-        const limit =
-          config.contextLimit > 0
-            ? config.contextLimit
-            : /\[1m\]|1m/i.test(input.model?.id || '') ? 1_000_000 : 200_000;
-        const used = await contextTokens(input.transcript_path);
-        if (used != null) {
-          const pct = Math.min(100, Math.round((used / limit) * 100));
+        const usage = await contextUsage(input, config);
+        if (usage) {
+          const pct = Math.min(100, Math.round(usage.usedPct));
           // ctx 显示剩余百分比，但按已用比例着色（用得越多越红）
-          parts.ctx = paint(`${t.ctx} ${100 - pct}%`, pct >= 85 ? C.red : pct >= 60 ? C.yellow : C.green);
-        }
+          parts.ctx = paint(`${t.ctx} ${usage.estimated ? '~' : ''}${100 - pct}%`,
+            pct >= 85 ? C.red : pct >= 60 ? C.yellow : C.green);
+        } else parts.ctx = paint(`${t.ctx} --`, C.dim);
         break;
       }
       case 'glm': {
