@@ -18,7 +18,7 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 
 ## 安装
 
-需要 Node.js 18.17 或更高版本、npm 和 Git，无第三方运行依赖。
+需要 Node.js 18.17 或更高版本及 npm，无第三方运行依赖。从源码安装时才需要 Git。
 
 | 系统 | 安装终端 | 默认用户配置 |
 |---|---|---|
@@ -30,25 +30,23 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 `npm.cmd` / `npx.cmd` / `glm-statusline.cmd`。使用 WSL 时，请在 WSL 内安装 Node.js
 并运行安装命令，使配置和运行文件位于 WSL 用户目录。
 
-仓库公开，无需 GitHub 账号或认证即可使用下方命令安装。
+包公开发布到 npm，无需 npm 或 GitHub 账号即可安装。
 
 ### 方式一：npx 一键配置（推荐）
 
 ```bash
-npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1" glm-statusline --setup
+npx --yes @wenxingyu/glm-statusline@latest --setup
 ```
 
 ### 方式二：npm 全局安装
 
 ```bash
-npm install -g "git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1"
+npm install -g @wenxingyu/glm-statusline@latest
 glm-statusline --setup
 ```
 
-这两种方式都从 GitHub 公共仓库下载。包未发布到公共 npm registry，
-因此请使用完整的 Git URL，不要使用 `npx glm-statusline` 或 `npm install -g glm-statusline`。
-Git 安装和 `--package` 的用法见 [npm install 文档](https://docs.npmjs.com/cli/v11/commands/npm-install/)
-与 [npm exec 文档](https://docs.npmjs.com/cli/v11/commands/npm-exec/)。
+请使用完整包名 `@wenxingyu/glm-statusline`，安装后的命令名为 `glm-statusline`。
+若镜像源尚未同步新版本，可在 npm/npx 命令中添加 `--registry=https://registry.npmjs.org/`。
 
 `--setup` 会：
 
@@ -57,7 +55,7 @@ Git 安装和 `--package` 的用法见 [npm install 文档](https://docs.npmjs.c
 3. 更新 `~/.claude/settings.json` 中的 `statusLine`，保留其他设置。
    如需替换已有设置，会先生成 `settings.json.backup-*` 备份。
 
-升级时将安装命令中的版本标签换为新版本，再运行 `--setup` 更新固定目录中的运行文件。
+升级时重新执行上方带 `@latest` 的安装命令，再运行 `--setup` 更新固定目录中的运行文件。
 全局包本身升级不会自动覆盖已部署的运行文件。若 Node.js 安装路径发生变化，也请重新运行 `--setup`。
 
 ### 从源码运行
@@ -106,7 +104,7 @@ echo '{"model":{"display_name":"GLM-4.6"}}' | glm-statusline
 上述命令适用于 npm 全局安装。仅使用 npx 配置时，可以运行：
 
 ```bash
-npx --yes --package="git+https://github.com/wenxingyu/glm-statusline.git#v1.0.1" glm-statusline --demo
+npx --yes @wenxingyu/glm-statusline@latest --demo
 ```
 
 排错时设 `GLM_STATUSLINE_DEBUG=1` 可看完整报错。

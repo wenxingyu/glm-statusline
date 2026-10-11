@@ -1,8 +1,11 @@
 {
   "name": "@wenxingyu/glm-statusline",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Claude Code status line with GLM Coding Plan quota and account balance",
-  "private": true,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
