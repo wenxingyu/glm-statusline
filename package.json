@@ -3,7 +3,7 @@
   "version": "1.0.1",
   "description": "Claude Code status line with GLM Coding Plan quota and account balance",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "glm-statusline": "statusline.mjs"
