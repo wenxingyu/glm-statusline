@@ -81,6 +81,16 @@ test('npm-style symlink entry points execute the CLI', { skip: process.platform 
   assert.equal(execFileSync(process.execPath, [link, '--version'], { encoding: 'utf8' }).trim(), version);
 });
 
+test('Windows case variants and 8.3 short paths execute the installed CLI', { skip: process.platform !== 'win32' }, async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const shortDir = execSync(`for %I in ("${result.installDir}") do @echo %~sI`, { encoding: 'utf8' }).trim();
+  // Node 的 ESM 扩展名匹配本身区分大小写，因此保留 .mjs 文件名。
+  for (const entry of [path.join(path.dirname(script).toUpperCase(), 'statusline.mjs'), path.join(shortDir, 'statusline.mjs')]) {
+    assert.equal(execFileSync(process.execPath, [entry, '--version'], { encoding: 'utf8' }).trim(), version);
+  }
+});
+
 test('generated statusLine command handles spaces and apostrophes and receives stdin through the native shell', async (t) => {
   const claudeDir = path.join(await temp(t), "user's workspace");
   const result = await setup({ claudeDir });

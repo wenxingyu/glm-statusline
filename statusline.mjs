@@ -14,7 +14,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { getGlmInfo, PLATFORM_BASE } from './glm.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -396,7 +396,11 @@ async function main() {
 }
 
 const entryPath = process.argv[1] && await fs.realpath(process.argv[1]).catch(() => path.resolve(process.argv[1]));
-if (entryPath && import.meta.url === pathToFileURL(entryPath).href) main().catch((e) => {
+// Windows 的临时目录可能采用 8.3 短路径或不同大小写；两边使用同一 realpath 规则。
+const modulePath = await fs.realpath(fileURLToPath(import.meta.url)).catch(() => fileURLToPath(import.meta.url));
+const isMain = entryPath && (process.platform === 'win32'
+  ? entryPath.toLowerCase() === modulePath.toLowerCase() : entryPath === modulePath);
+if (isMain) main().catch((e) => {
   if (process.argv.length > 2) {
     console.error(e.message);
     process.exitCode = 1;
