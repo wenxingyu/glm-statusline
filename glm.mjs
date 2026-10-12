@@ -22,6 +22,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { fetchWithProxy } from './proxy.mjs';
 
 const CACHE_DIR = path.join(os.tmpdir(), 'glm-statusline-v2');
 
@@ -109,15 +110,15 @@ export function parseBalance(body) {
   return n;
 }
 
-async function fetchJson(url, headers, timeoutMs) {
-  const res = await fetch(url, {
+async function fetchJson(url, headers, timeoutMs, proxyEnv) {
+  const res = await fetchWithProxy(url, {
     headers: {
       Accept: 'application/json',
       'User-Agent': 'glm-statusline/1.0',
       ...headers,
     },
     signal: AbortSignal.timeout(timeoutMs),
-  });
+  }, proxyEnv);
   if (res.status === 401 || res.status === 403) {
     throw new Error(`API Key 无效 (HTTP ${res.status})`);
   }
@@ -218,9 +219,9 @@ const ageOf = (entry, now) => entry && entry.updatedAt > 0 && entry.updatedAt <=
 const fresh = (entry, now, ttlSec) => Boolean(entry && ttlSec > 0 &&
   entry.attemptAt <= now && now - entry.attemptAt < ttlSec * 1000);
 
-async function refresh(url, headers, parse, previous, timeoutMs) {
+async function refresh(url, headers, parse, previous, timeoutMs, proxyEnv) {
   try {
-    const value = parse(await fetchJson(url, headers, timeoutMs));
+    const value = parse(await fetchJson(url, headers, timeoutMs, proxyEnv));
     const now = Date.now();
     return { value, updatedAt: now, attemptAt: now, error: null };
   } catch (e) {
@@ -243,6 +244,7 @@ export async function getGlmInfo({
   timeoutMs = 5000,
   force = false,
   cacheDir = CACHE_DIR,
+  proxyEnv = process.env,
 }) {
   platform = platform === 'en' ? 'en' : 'cn';
   const hash = createHash('sha256').update(String(key)).digest('hex');
@@ -265,9 +267,9 @@ export async function getGlmInfo({
     prev = await readCache(file);
     const [plan, balance] = await Promise.all([
       due(prev.plan) ? refresh(`${PLATFORM_BASE[platform]}/api/monitor/usage/quota/limit`,
-        { Authorization: key }, parsePlan, prev.plan, timeoutMs) : prev.plan,
+        { Authorization: key }, parsePlan, prev.plan, timeoutMs, proxyEnv) : prev.plan,
       needBalance && due(prev.balance) ? refresh(BALANCE_URL,
-        { Authorization: `Bearer ${key}` }, parseBalance, prev.balance, timeoutMs) : prev.balance,
+        { Authorization: `Bearer ${key}` }, parseBalance, prev.balance, timeoutMs, proxyEnv) : prev.balance,
     ]);
     const cache = { plan: plan ?? null, balance: balance ?? null };
     await writeCache(file, cache);

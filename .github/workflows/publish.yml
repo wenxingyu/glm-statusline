@@ -1,0 +1,56 @@
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+          package-manager-cache: false
+      - name: Check release version
+        id: version
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const tag = process.env.GITHUB_REF_NAME;
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`Tag ${tag} must match package version v${pkg.version}. Run npm version before pushing a tag.`);
+          }
+          if (lock.version !== pkg.version || lock.packages[''].version !== pkg.version) {
+            throw new Error('package.json and package-lock.json versions must match.');
+          }
+          const distTag = pkg.version.includes('-') ? 'next' : 'latest';
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist_tag=${distTag}\n`);
+          NODE
+      # npm 的 OIDC 发布需要 >=11.5.1，显式使用 npm 11。
+      - run: npm install --global npm@11 --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Publish with npm trusted publishing
+        run: npm publish --access public --tag "$NPM_DIST_TAG"
+        env:
+          NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}

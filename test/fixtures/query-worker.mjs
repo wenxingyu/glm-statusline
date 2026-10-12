@@ -10,7 +10,7 @@ globalThis.fetch = async (url) => {
     : { code: 200, data: { balance: 46.2 } } };
 };
 process.once('message', async () => {
-  const result = await getGlmInfo({ key: 'worker-key', cacheDir: process.argv[2] });
+  const result = await getGlmInfo({ key: 'worker-key', cacheDir: process.argv[2], proxyEnv: {} });
   process.send({ result, calls }, () => process.disconnect());
 });
 process.send('ready');

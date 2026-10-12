@@ -27,7 +27,7 @@ async function setup(t) {
     return response(isPlan ? body() : { code: 200, data: { availableBalance: 46.2 } });
   });
   return {
-    query: (options = {}) => getGlmInfo({ key: 'test-key', cacheDir, ...options }),
+    query: (options = {}) => getGlmInfo({ key: 'test-key', cacheDir, proxyEnv: {}, ...options }),
     cacheDir, requests,
     tick: (ms) => { now += ms; },
     fail: (plan = true, balance = true) => { failPlan = plan; failBalance = balance; },

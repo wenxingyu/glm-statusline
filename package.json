@@ -14,6 +14,7 @@
   "files": [
     "statusline.mjs",
     "glm.mjs",
+    "proxy.mjs",
     "setup.mjs",
     "config.json"
   ],
@@ -21,7 +22,7 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "test": "node --test test/glm.test.mjs test/statusline.test.mjs test/setup.test.mjs",
+    "test": "node --test test/glm.test.mjs test/proxy.test.mjs test/statusline.test.mjs test/setup.test.mjs",
     "test:install": "node scripts/smoke-install.mjs",
     "demo": "node statusline.mjs --demo"
   },

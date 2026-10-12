@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getGlmInfo, PLATFORM_BASE } from './glm.mjs';
+import { proxyEnvironment } from './proxy.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -347,6 +348,7 @@ export async function render(input, config) {
           ttlSec: config.cacheTtlSeconds,
           staleSec: config.staleSeconds,
           timeoutMs: config.timeoutMs,
+          proxyEnv: proxyEnvironment(env),
         });
         parts.glm = renderGlm(info, config, platform);
         break;
@@ -420,6 +422,7 @@ async function main() {
       ttlSec: 0, // 强制刷新
       staleSec: config.staleSeconds,
       timeoutMs: config.timeoutMs,
+      proxyEnv: proxyEnvironment(env),
       force: true,
     });
     console.log(JSON.stringify(info, null, 2));

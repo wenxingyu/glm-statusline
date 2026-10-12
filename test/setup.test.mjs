@@ -27,7 +27,8 @@ test('setup preserves existing settings, backs them up and deploys a working sta
   assert.deepEqual(settings.env, { ANTHROPIC_AUTH_TOKEN: 'test-only-token' });
   assert.deepEqual(settings.permissions, { allow: ['Read'] });
   assert.ok(settings.statusLine.command.includes('home with spaces'));
-  assert.ok(!settings.statusLine.command.includes('npx'));
+  // Node 本身可能由 npx 安装；验证命令没有通过 npx/npm exec 启动即可。
+  assert.doesNotMatch(settings.statusLine.command, /^(?:npx(?:\.cmd)?|npm(?:\.cmd)?\s+exec)\s/i);
   const script = path.join(result.installDir, 'statusline.mjs');
   const demo = execFileSync(process.execPath, [script, '--demo'], {
     encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath },
