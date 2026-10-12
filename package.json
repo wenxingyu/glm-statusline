@@ -1,6 +1,6 @@
 {
   "name": "@wenxingyu/glm-statusline",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Claude Code status line with GLM Coding Plan quota and account balance",
   "publishConfig": {
     "access": "public",
