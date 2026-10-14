@@ -21,6 +21,7 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.7** · 2026-10-14 | 新安装默认自动选择中英文标签和状态提示，可固定为中文或英文 | 希望跟随系统语言的用户；已有配置需将 `lang` 改为 `auto` |
 | **1.0.6** · 2026-10-14 | 补齐历史更新日志，npm 首页展示版本摘要，发布后自动生成 GitHub Release | 文档与发布流程更新；状态栏功能与 1.0.5 相同，已有 1.0.5 用户可按需升级 |
 | **1.0.5** · 2026-10-14 | 修复 Windows 无 Git Bash 时 PowerShell 无法启动状态栏；支持带空格路径 | Windows 状态栏不显示的用户，升级后必须重新运行 `--setup` |
 | **1.0.4** · 2026-10-12 | 支持 HTTP / HTTPS 代理、代理认证和 `NO_PROXY` | 需要经代理查询额度或余额的用户 |
@@ -124,7 +125,7 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `segments` | `["model","dir","git","ctx","glm"]` | 显示的分段及顺序：模型 / 目录 / git 分支 / 上下文剩余 / GLM 额度 |
-| `lang` | `zh` | 标签语言，`en` 则「周」显示为 `wk` |
+| `lang` | `auto` | 自动选择标签和状态提示语言；`zh` 固定中文（周），`en` 固定英文（wk） |
 | `glm.platform` | `auto` | `cn`（open.bigmodel.cn）/ `en`（api.z.ai）/ `auto`（按 `ANTHROPIC_BASE_URL` 判断） |
 | `glm.showBalance` | `true` | 是否查询并显示按量付费余额 |
 | `glm.showLevel` | `true` | 是否显示套餐等级（LITE/PRO/MAX） |
@@ -132,6 +133,16 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | `staleSeconds` | `1800` | 查询失败时，旧数据距最后成功查询的最大秒数；`0` 禁用失败兜底 |
 | `timeoutMs` | `5000` | 单次请求超时 |
 | `contextLimit` | `0` | 上下文窗口大小，`0` = 优先使用 Claude Code 上报值，缺失时按模型自动（200k / 1M） |
+
+`lang: "auto"` 优先读取运行环境中有效的 `LC_ALL`、`LC_MESSAGES`、`LANG`，
+没有有效值时使用 Node.js `Intl` 提供的系统默认区域语言。中文区域（包括简体、繁体）使用中文，
+其他语言、`C` / `POSIX` 区域或识别失败时使用英文。周额度以及缓存、刷新中、查询失败等状态提示一起切换。
+这里跟随的是进程可见的区域语言，不读取 Claude Code 的界面语言设置。
+修改系统或终端语言后，请重新打开终端并启动 Claude Code，使新的区域设置传入状态栏进程。
+
+新安装默认使用 `auto`。升级会保留已有的 `"lang": "zh"` 或 `"lang": "en"`；
+希望自动切换的老用户，更新运行文件后请将 `~/.claude/glm-statusline.json` 中的 `lang` 改为 `"auto"`。
+显式指定 `zh` / `en` 时不受系统或终端语言影响。
 
 可以用环境变量 `GLM_STATUSLINE_CONFIG` 指定其他配置文件。字段类型或范围无效时，
 该字段使用默认值；`segments` 中的未知项会被忽略，重复项去重，空数组表示不显示任何分段。

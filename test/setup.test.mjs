@@ -41,6 +41,7 @@ test('setup initializes a new configuration and repeat setup preserves user pref
   const claudeDir = await temp(t);
   const initial = await setup({ claudeDir });
   assert.equal(initial.backupPath, null);
+  assert.equal(JSON.parse(await fs.readFile(initial.configPath, 'utf8')).lang, 'auto');
   const config = JSON.stringify({ glm: { showBalance: false }, lang: 'en' });
   await fs.writeFile(initial.configPath, config);
   const second = await setup({ claudeDir });
@@ -51,6 +52,38 @@ test('setup initializes a new configuration and repeat setup preserves user pref
   });
   assert.match(demo, /wk/);
   assert.ok(!demo.includes('¥'));
+});
+
+test('installed auto language follows locale on each invocation and keeps explicit user choices', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const run = (locale) => execFileSync(process.execPath, [script, '--demo'], {
+    encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath, LC_ALL: locale },
+  }).replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(run('zh_CN.UTF-8'), /周 88%/);
+  assert.match(run('en_US.UTF-8'), /wk 88%/);
+  assert.match(run('zh-Hant-TW'), /周 88%/);
+  assert.match(run('C'), /wk 88%/);
+  for (const lang of ['zh', 'en']) {
+    const config = JSON.stringify({ lang, segments: ['glm'] });
+    await fs.writeFile(result.configPath, config);
+    await setup({ claudeDir: path.dirname(result.configPath) });
+    assert.equal(await fs.readFile(result.configPath, 'utf8'), config);
+    assert.match(run(lang === 'zh' ? 'en_US.UTF-8' : 'zh_CN.UTF-8'), lang === 'zh' ? /周 88%/ : /wk 88%/);
+  }
+  // 用隔离的 home 和无凭据环境验证真实渲染的未配置提示，不访问用户账号或网络。
+  await fs.writeFile(result.configPath, JSON.stringify({ lang: 'auto', segments: ['glm'] }));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(glm_api_key|anthropic_auth_token|anthropic_api_key)$/i.test(name)));
+  const home = path.dirname(path.dirname(result.configPath));
+  for (const [locale, expected] of [['zh_CN.UTF-8', 'GLM 未配置 Key'], ['en_US.UTF-8', 'GLM no key']]) {
+    const output = execFileSync(process.execPath, [script], {
+      encoding: 'utf8', input: '{}', timeout: 10_000,
+      env: { ...env, HOME: home, USERPROFILE: home, GLM_STATUSLINE_CONFIG: result.configPath, LC_ALL: locale },
+    });
+    assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), expected);
+  }
 });
 
 test('invalid settings are left untouched and do not trigger installation', async (t) => {

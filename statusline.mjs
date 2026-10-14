@@ -36,7 +36,7 @@ const paint = (s, color) => `${color}${s}${C.reset}`;
 // ── 配置 ────────────────────────────────────────────────────
 const DEFAULTS = {
   segments: ['model', 'dir', 'git', 'ctx', 'glm'], // 要显示的分段，按顺序
-  lang: 'zh',                                       // zh | en
+  lang: 'auto',                                     // auto | zh | en
   glm: {
     platform: 'auto',   // auto | cn | en（auto 时按 ANTHROPIC_BASE_URL 判断）
     showBalance: true,  // 是否显示按量付费账户余额（仅 cn 平台）
@@ -58,7 +58,7 @@ export function normalizeConfig(user) {
     segments: Array.isArray(user.segments)
       ? [...new Set(user.segments.filter((s) => DEFAULTS.segments.includes(s)))]
       : [...DEFAULTS.segments],
-    lang: ['zh', 'en'].includes(user.lang) ? user.lang : DEFAULTS.lang,
+    lang: ['auto', 'zh', 'en'].includes(user.lang) ? user.lang : DEFAULTS.lang,
     glm: {
       platform: ['auto', 'cn', 'en'].includes(glm.platform) ? glm.platform : DEFAULTS.glm.platform,
       showBalance: typeof glm.showBalance === 'boolean' ? glm.showBalance : DEFAULTS.glm.showBalance,
@@ -69,6 +69,35 @@ export function normalizeConfig(user) {
     timeoutMs: Math.floor(number('timeoutMs', 1, 2_147_483_647)),
     contextLimit: number('contextLimit'),
   };
+}
+
+function localeLanguage(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  // 兼容 POSIX 的 zh_CN.UTF-8 / zh_TW@modifier 与 BCP 47 的 zh-Hant-TW。
+  const locale = value.trim().split(/[.@]/, 1)[0].replaceAll('_', '-');
+  if (/^(C|POSIX)$/i.test(locale)) return 'en';
+  try {
+    return new Intl.Locale(locale).language === 'zh' ? 'zh' : 'en';
+  } catch {
+    return null;
+  }
+}
+
+export function resolveLanguage(lang, {
+  env = process.env,
+  systemLocale = () => Intl.DateTimeFormat().resolvedOptions().locale,
+} = {}) {
+  if (lang === 'zh' || lang === 'en') return lang;
+  // 每次渲染解析，不在安装时固化语言；终端的区域设置优先于系统默认区域。
+  for (const name of ['LC_ALL', 'LC_MESSAGES', 'LANG']) {
+    const language = localeLanguage(env[name]);
+    if (language) return language;
+  }
+  try {
+    return localeLanguage(systemLocale()) ?? 'en';
+  } catch {
+    return 'en';
+  }
 }
 
 async function loadConfig() {
@@ -239,9 +268,9 @@ async function contextUsage(input, config) {
 // ── 渲染 ────────────────────────────────────────────────────
 const L = {
   zh: { week: '周', ctx: 'ctx', noKey: 'GLM 未配置 Key', fail: 'GLM 查询失败',
-    stale: '缓存', partial: '部分查询失败', refreshing: 'GLM 刷新中' },
+    stale: '缓存', partial: '部分查询失败', refreshing: 'GLM 刷新中', noData: '无数据' },
   en: { week: 'wk', ctx: 'ctx', noKey: 'GLM no key', fail: 'GLM query failed',
-    stale: 'cached', partial: 'partial failure', refreshing: 'GLM refreshing' },
+    stale: 'cached', partial: 'partial failure', refreshing: 'GLM refreshing', noData: 'no data' },
 };
 
 function fmtCountdown(resetMs) {
@@ -273,7 +302,7 @@ function fmtBalance(n) {
 }
 
 export function renderGlm(info, config, platform) {
-  const t = L[config.lang] ?? L.zh;
+  const t = L[resolveLanguage(config.lang)];
   const chunks = [];
   if (config.glm.showLevel && info.level) chunks.push(paint(info.level.toUpperCase(), C.yellow));
   const five = quotaPart('5h', info.five);
@@ -285,7 +314,7 @@ export function renderGlm(info, config, platform) {
   }
   if (!chunks.length) {
     if (info.refreshing) return paint(t.refreshing, C.dim);
-    return paint(`${t.fail}: ${info.error || info.partialError || '无数据'}`, C.red);
+    return paint(`${t.fail}: ${info.error || info.partialError || t.noData}`, C.red);
   }
   if (info.stale) chunks.push(paint(t.stale, C.yellow));
   else if (info.partialError) chunks.push(paint(t.partial, C.yellow));
@@ -294,7 +323,8 @@ export function renderGlm(info, config, platform) {
 
 export async function render(input, config) {
   if (!input || typeof input !== 'object') input = {};
-  const t = L[config.lang] ?? L.zh;
+  config = { ...config, lang: resolveLanguage(config.lang) };
+  const t = L[config.lang];
   const cwd = input.workspace?.current_dir || input.cwd || process.cwd();
   const env = config.segments.includes('glm') && !config._demo ? await loadClaudeSettingsEnv() : {};
   const key = resolveKey(env);

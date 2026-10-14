@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { normalizeConfig, gitBranch, renderGlm, render } from '../statusline.mjs';
+import { normalizeConfig, resolveLanguage, gitBranch, renderGlm, render } from '../statusline.mjs';
 
 test('invalid config fields fall back individually and segment order is preserved', () => {
   const defaults = normalizeConfig(null);
@@ -15,6 +15,45 @@ test('invalid config fields fall back individually and segment order is preserve
   assert.equal(normalizeConfig({ glm: { showBalance: false }, cacheTtlSeconds: 0 }).glm.showBalance, false);
   assert.equal(normalizeConfig({ cacheTtlSeconds: 0 }).cacheTtlSeconds, 0);
   assert.equal(normalizeConfig({ timeoutMs: 1.9 }).timeoutMs, 1);
+  assert.equal(defaults.lang, 'auto');
+  for (const lang of ['auto', 'zh', 'en']) assert.equal(normalizeConfig({ lang }).lang, lang);
+});
+
+test('explicit language overrides terminal and system locale without probing the system', () => {
+  for (const lang of ['zh', 'en']) {
+    assert.equal(resolveLanguage(lang, { env: { LC_ALL: lang === 'zh' ? 'en_US' : 'zh_CN' },
+      systemLocale: () => { throw new Error('must not probe'); } }), lang);
+  }
+});
+
+test('auto language supports Chinese locale variants and falls back to English for other locales', () => {
+  for (const locale of ['zh', 'zh-CN', 'zh-TW', 'zh-HK', 'zh-Hans-CN', 'zh-Hant-TW', 'ZH_cn.UTF-8', 'zh_TW@stroke']) {
+    assert.equal(resolveLanguage('auto', { env: { LANG: locale } }), 'zh', locale);
+  }
+  for (const locale of ['en-US', 'en_GB.UTF-8', 'ja_JP.UTF-8', 'fr-FR', 'C', 'C.UTF-8', 'POSIX']) {
+    assert.equal(resolveLanguage('auto', { env: { LANG: locale }, systemLocale: () => 'zh-CN' }), 'en', locale);
+  }
+});
+
+test('auto language uses LC_ALL then LC_MESSAGES then LANG then the system locale', () => {
+  const detect = (env) => resolveLanguage('auto', { env, systemLocale: () => 'zh-Hant-TW' });
+  assert.equal(detect({ LC_ALL: 'en_US.UTF-8', LC_MESSAGES: 'zh_CN', LANG: 'zh_CN' }), 'en');
+  assert.equal(detect({ LC_ALL: 'C', LC_MESSAGES: 'zh_CN', LANG: 'zh_CN' }), 'en');
+  assert.equal(detect({ LC_ALL: '', LC_MESSAGES: 'zh_CN', LANG: 'en_US' }), 'zh');
+  assert.equal(detect({ LC_ALL: 'not a locale', LC_MESSAGES: ' ', LANG: 'en_US' }), 'en');
+  assert.equal(detect({ LANG: 'not a locale' }), 'zh');
+  assert.equal(detect({}), 'zh');
+  for (const locale of ['en-US', 'ja-JP', '', undefined, 'not a locale']) {
+    assert.equal(resolveLanguage('auto', { env: {}, systemLocale: () => locale }), 'en');
+  }
+  assert.equal(resolveLanguage('auto', { env: {}, systemLocale: () => { throw new Error('unavailable'); } }), 'en');
+});
+
+test('auto language re-evaluates locale changes instead of caching the first result', () => {
+  const env = { LANG: 'zh_CN.UTF-8' };
+  assert.equal(resolveLanguage('auto', { env }), 'zh');
+  env.LANG = 'en_US.UTF-8';
+  assert.equal(resolveLanguage('auto', { env }), 'en');
 });
 
 test('git branches are found beyond five levels and in relative worktrees', async (t) => {
@@ -40,14 +79,27 @@ test('renderer respects balance and level switches, including cached values', ()
 });
 
 test('weekly-only data and zero balance survive partial failures with visible warning', () => {
-  const line = strip(renderGlm({ weekly: { usedPct: 12 }, balance: 0, partialError: 'offline' }, normalizeConfig({}), 'cn'));
+  const line = strip(renderGlm({ weekly: { usedPct: 12 }, balance: 0, partialError: 'offline' }, normalizeConfig({ lang: 'zh' }), 'cn'));
   assert.equal(line, '周 88% · ¥0 · 部分查询失败');
 });
 
 test('fallback data and an initial refresh are visibly marked', () => {
-  const config = normalizeConfig({});
+  const config = normalizeConfig({ lang: 'zh' });
   assert.equal(strip(renderGlm({ five: { usedPct: 38 }, stale: true }, config, 'cn')), '5h 62% · 缓存');
   assert.equal(strip(renderGlm({ refreshing: true }, config, 'cn')), 'GLM 刷新中');
+});
+
+test('weekly labels and status messages use the selected language consistently', () => {
+  for (const [lang, week, stale, partial, refreshing, fail] of [
+    ['zh', '周', '缓存', '部分查询失败', 'GLM 刷新中', 'GLM 查询失败: 无数据'],
+    ['en', 'wk', 'cached', 'partial failure', 'GLM refreshing', 'GLM query failed: no data'],
+  ]) {
+    const config = normalizeConfig({ lang });
+    assert.equal(strip(renderGlm({ weekly: { usedPct: 12 }, stale: true }, config, 'cn')), `${week} 88% · ${stale}`);
+    assert.equal(strip(renderGlm({ weekly: { usedPct: 12 }, partialError: 'offline' }, config, 'cn')), `${week} 88% · ${partial}`);
+    assert.equal(strip(renderGlm({ refreshing: true }, config, 'cn')), refreshing);
+    assert.equal(strip(renderGlm({}, config, 'cn')), fail);
+  }
 });
 
 const renderCtx = async (input, config = {}) => strip(await render(input,

@@ -1,6 +1,6 @@
 {
   "segments": ["model", "dir", "git", "ctx", "glm"],
-  "lang": "zh",
+  "lang": "auto",
   "glm": {
     "platform": "auto",
     "showBalance": true,
