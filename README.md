@@ -57,7 +57,8 @@ glm-statusline --setup
    如需替换已有设置，会先生成 `settings.json.backup-*` 备份。
 
 升级时重新执行上方带 `@latest` 的安装命令，再运行 `--setup` 更新固定目录中的运行文件。
-全局包本身升级不会自动覆盖已部署的运行文件。若 Node.js 安装路径发生变化，也请重新运行 `--setup`。
+全局包本身升级不会自动覆盖已部署的运行文件。Linux/macOS 使用 Node.js 绝对路径，
+若其安装路径发生变化，请重新运行 `--setup`；Windows 使用 `PATH` 中的 `node`。
 
 ### 从源码运行
 
@@ -69,6 +70,29 @@ node statusline.mjs --setup
 
 重启 Claude Code（或开新会话）即可生效。API Key 自动读取 `~/.claude/settings.json` 的
 `env.ANTHROPIC_AUTH_TOKEN`（即你连 GLM 用的那个 Key），也可以用环境变量 `GLM_API_KEY` 覆盖。
+
+### Windows 状态栏不显示
+
+Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 PowerShell
+（见[官方说明](https://code.claude.com/docs/en/statusline#windows-configuration)）。
+旧版安装器生成的 `"C:/Program Files/nodejs/node.exe" "脚本路径"` 不能在 PowerShell
+中直接执行，因此即使手动运行脚本正常，状态栏也可能完全不显示。
+
+当前安装器在 Windows 上生成以下形式，兼容 PowerShell、CMD 和 Git Bash：
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node \"C:/Users/你的用户名/.claude/glm-statusline/statusline.mjs\""
+  }
+}
+```
+
+脚本路径的引号需要保留，以支持带空格的用户目录；路径使用正斜杠。
+旧配置可重新运行修复后的 `--setup` 自动更新并备份，也可按上例仅修改 `statusLine.command`。
+请确认启动 Claude Code 的终端中 `node --version` 可用；若刚安装或修改 Node.js 的 `PATH`，
+关闭并重新打开终端，再启动 Claude Code。
 
 ## 配置
 
@@ -158,7 +182,8 @@ npm pack --dry-run
 GitHub Actions 在 Windows、Ubuntu 和 macOS 上分别使用 Node.js 18.17.0 与 24
 运行回归测试和安装测试。安装测试实际执行打包、全局安装、npm exec（npx 的执行机制）、
 隔离用户目录下的 `--setup`，并通过系统 Shell 执行生成的状态栏命令。
-Unix 还验证符号链接入口与特殊字符路径；macOS 额外验证 Zsh，Windows 检测到 Git Bash 时也会验证。
+Unix 还验证符号链接入口与特殊字符路径；macOS 额外验证 Zsh，Windows 验证 CMD 和
+Windows PowerShell，检测到 PowerShell 7 或 Git Bash 时也会验证。
 查看 [跨平台测试结果](https://github.com/wenxingyu/glm-statusline/actions/workflows/test.yml)。
 
 ## 自动发布到 npm

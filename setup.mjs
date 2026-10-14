@@ -9,7 +9,7 @@ const RUNTIME_FILES = ['statusline.mjs', 'glm.mjs', 'proxy.mjs', 'setup.mjs', 'p
 
 function shellQuote(value) {
   if (process.platform === 'win32') {
-    // Claude Code 在 Windows 下通过 shell 执行命令；正斜杠同时适用于 Git Bash。
+    // 参数路径保留引号以支持空格；正斜杠同时适用于 PowerShell、CMD 和 Git Bash。
     const normalized = value.replaceAll('\\', '/');
     if (/["\r\n$`%]/.test(normalized)) throw new Error('安装路径包含不支持的 shell 特殊字符');
     return `"${normalized}"`;
@@ -21,7 +21,10 @@ export async function setup({ claudeDir = path.join(os.homedir(), '.claude') } =
   const settingsPath = path.join(claudeDir, 'settings.json');
   const configPath = path.join(claudeDir, 'glm-statusline.json');
   const installDir = path.join(claudeDir, 'glm-statusline');
-  const command = `${shellQuote(process.execPath)} ${shellQuote(path.join(installDir, 'statusline.mjs'))}`;
+  // PowerShell 不能直接执行带引号的可执行文件路径；其 & 调用语法又不兼容 CMD/Bash。
+  // Windows 使用 PATH 中的 node 作为三种 shell 都能识别的命令，脚本路径仍单独引用。
+  const executable = process.platform === 'win32' ? 'node' : shellQuote(process.execPath);
+  const command = `${executable} ${shellQuote(path.join(installDir, 'statusline.mjs'))}`;
   let original = null;
   let settings = {};
   try {

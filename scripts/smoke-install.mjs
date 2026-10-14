@@ -46,6 +46,14 @@ try {
     ...options, env: { ...options.env, GLM_STATUSLINE_CONFIG: config },
     input: JSON.stringify({ model: { display_name: 'Installed OK' } }),
   }).replace(/\x1b\[[0-9;]*m/g, '').trim(), 'Installed OK');
+  if (process.platform === 'win32') {
+    const encoded = Buffer.from(statusLine.command, 'utf16le').toString('base64');
+    assert.equal(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+      ...options, env: { ...options.env, GLM_STATUSLINE_CONFIG: config },
+      input: JSON.stringify({ model: { display_name: 'Installed OK' } }),
+    }).replace(/\x1b\[[0-9;]*m/g, '').trim(), 'Installed OK');
+    console.log('PASS packaged statusLine command through Windows PowerShell');
+  }
   console.log('PASS packaged --setup and installed statusLine command');
 } finally {
   await fs.rm(root, { recursive: true, force: true });

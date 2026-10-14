@@ -92,7 +92,7 @@ test('Windows case variants and 8.3 short paths execute the installed CLI', { sk
   }
 });
 
-test('generated statusLine command handles spaces and apostrophes and receives stdin through the native shell', async (t) => {
+test('generated statusLine command handles spaces and apostrophes and receives stdin through supported shells', async (t) => {
   const claudeDir = path.join(await temp(t), "user's workspace");
   const result = await setup({ claudeDir });
   await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'dir'] }));
@@ -104,6 +104,21 @@ test('generated statusLine command handles spaces and apostrophes and receives s
   assert.match(output, /Cross-platform/);
   assert.ok(output.includes("user's workspace"));
   if (process.platform === 'win32') {
+    for (const shell of ['powershell.exe', 'pwsh.exe']) {
+      await t.test(shell, (t) => {
+        // 编码只用于无损传入命令文本；stdin 留给状态栏的会话 JSON。
+        const encoded = Buffer.from(statusLine.command, 'utf16le').toString('base64');
+        const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], options);
+        if (shell === 'pwsh.exe' && result.error?.code === 'ENOENT') {
+          t.skip('PowerShell 7 is not installed');
+          return;
+        }
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /Cross-platform/);
+        assert.ok(result.stdout.includes("user's workspace"));
+      });
+    }
     const bash = path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git', 'bin', 'bash.exe');
     try { await fs.access(bash); } catch { return; }
     assert.match(execFileSync(bash, ['--noprofile', '--norc', '-c', statusLine.command], options), /Cross-platform/);
