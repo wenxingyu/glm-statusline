@@ -17,6 +17,27 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 - 同一账号并发刷新时只发起一组请求，其他调用显示有效缓存或「GLM 刷新中」
 - 查询失败时，有效期内的旧数据标记「缓存」；超过兜底期限后停止显示
 
+## 版本更新
+
+| 版本 | 主要变化 | 哪些用户建议升级 |
+|---|---|---|
+| **1.0.6** · 2026-10-14 | 补齐历史更新日志，npm 首页展示版本摘要，发布后自动生成 GitHub Release | 文档与发布流程更新；状态栏功能与 1.0.5 相同，已有 1.0.5 用户可按需升级 |
+| **1.0.5** · 2026-10-14 | 修复 Windows 无 Git Bash 时 PowerShell 无法启动状态栏；支持带空格路径 | Windows 状态栏不显示的用户，升级后必须重新运行 `--setup` |
+| **1.0.4** · 2026-10-12 | 支持 HTTP / HTTPS 代理、代理认证和 `NO_PROXY` | 需要经代理查询额度或余额的用户 |
+| **1.0.3** · 2026-10-11 | 修复恢复会话后的上下文比例；估算值标记 `~`，未知值显示 `--` | 使用恢复会话、关注上下文剩余比例的用户 |
+
+查看[完整更新日志（含早期版本）](https://github.com/wenxingyu/glm-statusline/blob/main/CHANGELOG.md)
+或 [GitHub Releases](https://github.com/wenxingyu/glm-statusline/releases)。
+
+**升级并应用修复：**
+
+```bash
+npx --yes @wenxingyu/glm-statusline@latest --setup
+```
+
+Windows PowerShell 可将 `npx` 换成 `npx.cmd`。随后重启 Claude Code 或开启新会话。
+`--setup` 保留用户配置，并在替换状态栏命令前备份原设置；仅升级全局 npm 包不会更新已部署的运行文件。
+
 ## 安装
 
 需要 Node.js 18.17 或更高版本及 npm，无第三方运行依赖。从源码安装时才需要 Git。
@@ -188,10 +209,13 @@ Windows PowerShell，检测到 PowerShell 7 或 Git Bash 时也会验证。
 
 ## 自动发布到 npm
 
-`.github/workflows/publish.yml` 在推送 `v*` tag（例如 `v1.0.4`）时运行。
+`.github/workflows/publish.yml` 在推送 `v*` tag（例如 `v1.0.6`）时运行。
 先执行 Windows、Ubuntu、macOS 的测试和安装验证，全部成功后才发布。
 tag 必须与 `package.json` 的版本一致，`package-lock.json` 的版本也必须同步。
 正式版本发布到 npm 的 `latest`，预发布版本（如 `v1.1.0-beta.0`）发布到 `next`。
+发布前必须在 `CHANGELOG.md` 中添加 `## 版本号 - YYYY-MM-DD` 条目，写明变化和升级提示，
+并更新 README 的版本摘要。缺少对应版本的更新说明会阻止发布。
+npm 发布成功后，流水线从更新日志中提取该版本说明并创建 GitHub Release；预发布版本标记为 prerelease。
 
 发布使用 [npm Trusted Publishing（OIDC）](https://docs.npmjs.com/trusted-publishers/)，
 无需在 GitHub Secrets 中保存 `NPM_TOKEN`。首次启用时，登录 npm，打开
@@ -214,10 +238,11 @@ git push origin main --follow-tags
 ```
 
 `npm version patch` 会更新两个版本文件、创建版本提交和 `v` 前缀的 tag；
-当前 `1.0.3` 会变为 `1.0.4`。也可以使用 `npm version minor` 或 `npm version major`。
+例如从 `1.0.6` 升到 `1.0.7`。也可以使用 `npm version minor` 或 `npm version major`。
 已有版本提交时，在 GitHub 创建指向该提交的同名新 tag 也会触发发布，
 仅创建本地 tag 尚不会触发；工作流文件必须存在于 tag 指向的提交中。
 相同 npm 版本不能重复发布，发布失败时在 GitHub Actions 中查看日志。
+如果 npm 已发布成功、仅 GitHub Release 步骤失败，选择 **Re-run failed jobs** 重试发布说明任务即可。
 
 ## 接口说明
 

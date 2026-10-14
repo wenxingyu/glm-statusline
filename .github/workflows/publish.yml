@@ -47,6 +47,8 @@ jobs:
           const distTag = pkg.version.includes('-') ? 'next' : 'latest';
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `dist_tag=${distTag}\n`);
           NODE
+      - name: Validate release notes
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
       # npm 的 OIDC 发布需要 >=11.5.1，显式使用 npm 11。
       - run: npm install --global npm@11 --no-audit --no-fund
       - run: npm ci --ignore-scripts --no-audit --no-fund
@@ -54,3 +56,32 @@ jobs:
         run: npm publish --access public --tag "$NPM_DIST_TAG"
         env:
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Create GitHub Release from changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            flags=()
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              flags+=(--prerelease --latest=false)
+            fi
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
+          fi

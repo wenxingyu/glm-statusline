@@ -1,6 +1,6 @@
 {
   "name": "@wenxingyu/glm-statusline",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Claude Code status line with GLM Coding Plan quota and account balance",
   "publishConfig": {
     "access": "public",
@@ -16,13 +16,14 @@
     "glm.mjs",
     "proxy.mjs",
     "setup.mjs",
-    "config.json"
+    "config.json",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=18.17"
   },
   "scripts": {
-    "test": "node --test test/glm.test.mjs test/proxy.test.mjs test/statusline.test.mjs test/setup.test.mjs",
+    "test": "node --test test/glm.test.mjs test/proxy.test.mjs test/statusline.test.mjs test/setup.test.mjs test/release-notes.test.mjs",
     "test:install": "node scripts/smoke-install.mjs",
     "demo": "node statusline.mjs --demo"
   },
