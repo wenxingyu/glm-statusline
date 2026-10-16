@@ -72,6 +72,24 @@ test('git branches are found beyond five levels and in relative worktrees', asyn
 });
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+test('one provider uses compact labels and distinct providers get names after auto deduplication', async () => {
+  const preview = async (segments, options = {}) => strip(await render({}, {
+    ...normalizeConfig({ lang: 'en', segments, ...options }), _demo: true,
+  }));
+  const glm = await preview(['glm']);
+  assert.match(glm, /^PRO/);
+  assert.doesNotMatch(glm, /GLM/);
+  assert.equal(await preview(['auto', 'glm']), glm);
+  assert.equal(await preview(['deepseek']), '¥97.81');
+  assert.equal(await preview(['minimax'], { minimax: { level: 'go' } }), 'Go 5h 62% · wk 88%');
+  assert.equal(await preview(['minimax']), 'MiniMax 5h 62% · wk 88%');
+  assert.equal(await preview(['minimax'], { minimax: { level: 'go', showLevel: false } }),
+    'MiniMax 5h 62% · wk 88%');
+  const multiple = await preview(['deepseek', 'auto', 'glm', 'minimax'], { minimax: { level: 'build' } });
+  assert.equal(multiple, `DeepSeek ¥97.81 | GLM ${glm} | MiniMax Build 5h 62% · wk 88%`);
+  assert.equal((multiple.match(/GLM/g) ?? []).length, 1);
+});
+
 test('renderer respects balance and level switches, including cached values', () => {
   const info = { level: 'pro', five: { usedPct: 38 }, balance: 46.2 };
   const config = normalizeConfig({ glm: { showBalance: false, showLevel: false } });
@@ -229,13 +247,16 @@ test('auto recognizes supported URL hosts without trusting paths, lookalikes or 
     ['https://OPEN.BIGMODEL.CN/api/anthropic', 'glm'],
     ['https://api.z.ai/api/anthropic', 'glm'],
     ['https://api.minimaxi.com/anthropic', 'minimax'],
+    ['https://api.minimax.cn/anthropic', 'minimax'],
+    ['https://minimax.cn', 'minimax'],
     ['https://api.minimax.io/anthropic', 'minimax'],
     ['https://api.minimax.chat/anthropic', 'minimax'],
   ]) assert.equal(detectProvider(base), provider);
   for (const base of ['', undefined, 'not a URL', 'https://api.anthropic.com',
     'https://localhost:8080', 'https://proxy.example/api.deepseek.com',
     'https://api.deepseek.com.evil.test', 'https://evilbigmodel.cn',
-    'https://minimax.io.evil.test', 'https://api.deepseek.com@proxy.example',
+    'https://minimax.io.evil.test', 'https://api.minimax.cn.evil.test', 'https://evilminimax.cn',
+    'https://api.minimax.cn@proxy.example', 'https://api.deepseek.com@proxy.example',
     'ftp://api.deepseek.com']) assert.equal(detectProvider(base), null);
   assert.deepEqual(resolveSegments(normalizeConfig({ segments: ['auto'] }),
     { GLM_API_KEY: 'dedicated' }, {}), []);
@@ -252,7 +273,15 @@ test('auto follows credential URL precedence, switches providers and deduplicate
   assert.deepEqual(resolveSegments(config, settings, current), ['glm', 'model', 'deepseek']);
   assert.deepEqual(resolveSegments(normalizeConfig({ segments: ['deepseek', 'model', 'auto'] }),
     { ANTHROPIC_BASE_URL: 'https://api.deepseek.com' }, {}), ['deepseek', 'model']);
-  assert.deepEqual(normalizeConfig({}).segments, ['model', 'dir', 'git', 'ctx', 'auto']);
+  assert.deepEqual(normalizeConfig({}).segments, ['model', 'dir', 'git', 'ctx', 'tok', 'speed', 'auto']);
+});
+
+test('MiniMax cn URL enables auto and preserves the shared Claude credential', () => {
+  const env = { ANTHROPIC_BASE_URL: 'https://api.minimax.cn/anthropic', ANTHROPIC_AUTH_TOKEN: 'fixture-minimax-key' };
+  assert.equal(detectProvider(env.ANTHROPIC_BASE_URL), 'minimax');
+  assert.deepEqual(resolveSegments(normalizeConfig({}), env, {}),
+    ['model', 'dir', 'git', 'ctx', 'tok', 'speed', 'minimax']);
+  assert.deepEqual(resolveCredential('minimax', env, {}), { key: 'fixture-minimax-key', mismatch: false });
 });
 
 test('provider mismatch is displayed without making a network request', async (t) => {

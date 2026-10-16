@@ -51,9 +51,9 @@ export function shade(name, env = process.env) {
 
 // ── 配置 ────────────────────────────────────────────────────
 const DEFAULTS = {
-  segments: ['model', 'dir', 'git', 'ctx', 'auto'], // 要显示的分段，按顺序
+  segments: ['model', 'dir', 'git', 'ctx', 'tok', 'speed', 'auto'], // 要显示的分段，按顺序
   lang: 'auto',                                     // auto | zh | en
-  minimax: { platform: 'auto', model: 'auto' },       // cn | en | auto; quota model name
+  minimax: { platform: 'auto', model: 'auto', level: 'auto', showLevel: true },
   glm: {
     platform: 'auto',   // auto | cn | en（auto 时按 ANTHROPIC_BASE_URL 判断）
     showBalance: true,  // 是否显示按量付费账户余额（仅 cn 平台）
@@ -81,6 +81,8 @@ export function normalizeConfig(user) {
     minimax: {
       platform: ['auto', 'cn', 'en'].includes(minimax.platform) ? minimax.platform : DEFAULTS.minimax.platform,
       model: typeof minimax.model === 'string' && minimax.model.trim() ? minimax.model.trim() : DEFAULTS.minimax.model,
+      level: ['auto', 'go', 'explore', 'build'].includes(minimax.level) ? minimax.level : DEFAULTS.minimax.level,
+      showLevel: typeof minimax.showLevel === 'boolean' ? minimax.showLevel : DEFAULTS.minimax.showLevel,
     },
     glm: {
       platform: ['auto', 'cn', 'en'].includes(glm.platform) ? glm.platform : DEFAULTS.glm.platform,
@@ -166,7 +168,7 @@ export function detectProvider(base) {
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     const host = url.hostname.toLowerCase();
     if (host === 'api.deepseek.com') return 'deepseek';
-    if (['minimaxi.com', 'minimax.io', 'minimax.chat'].some((domain) =>
+    if (['minimaxi.com', 'minimax.cn', 'minimax.io', 'minimax.chat'].some((domain) =>
       host === domain || host.endsWith(`.${domain}`))) return 'minimax';
     if (host === 'bigmodel.cn' || host.endsWith('.bigmodel.cn') ||
       host === 'z.ai' || host.endsWith('.z.ai')) return 'glm';
@@ -387,7 +389,7 @@ export function renderGlm(info, config, platform) {
   }
   if (info.stale) chunks.push(paint(t.stale, C.yellow));
   else if (info.partialError) chunks.push(paint(t.partial, C.yellow));
-  return chunks.join(paint(' · ', C.dim));
+  return (config._showProvider ? paint('GLM ', C.cyan) : '') + chunks.join(paint(' · ', C.dim));
 }
 
 export function renderDeepSeek(info, config) {
@@ -398,7 +400,7 @@ export function renderDeepSeek(info, config) {
   const balances = info.balances.map(({ currency, balance }) => paint(
     `${currency === 'CNY' ? '¥' : '$'}${balance.toFixed(2)}`, balance <= 0 ? shade('red') : C.green));
   if (info.stale) balances.push(paint(zh ? '缓存' : 'cached', C.yellow));
-  return balances.join(paint(' · ', C.dim));
+  return (config._showProvider ? paint('DeepSeek ', C.cyan) : '') + balances.join(paint(' · ', C.dim));
 }
 
 export function renderMiniMax(info, config) {
@@ -408,7 +410,11 @@ export function renderMiniMax(info, config) {
     ? (zh ? 'MiniMax 刷新中' : 'MiniMax refreshing')
     : (zh ? 'MiniMax 查询失败' : 'MiniMax query failed'), info.refreshing ? C.dim : shade('red'));
   if (info.stale) parts.push(paint(zh ? '缓存' : 'cached', C.yellow));
-  return paint('MiniMax ', C.cyan) + parts.join(paint(' · ', C.dim));
+  const configured = config.minimax?.level;
+  const label = { go: 'Go', explore: 'Explore', build: 'Build' }[configured && configured !== 'auto' ? configured : info.level];
+  const level = config.minimax?.showLevel !== false && label ? paint(`${label} `, C.yellow) : '';
+  const provider = config._showProvider || !level ? paint('MiniMax ', C.cyan) : '';
+  return provider + level + parts.join(paint(' · ', C.dim));
 }
 
 const fmtTokens = (n) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
@@ -427,7 +433,7 @@ function queryProvider(provider, config, env, key, force = false) {
   if (provider === 'glm') return getGlmInfo({ ...options,
     platform: resolvePlatform(config, env), showBalance: config.glm.showBalance });
   if (provider === 'minimax') return getMiniMaxInfo({ ...options,
-    platform: resolveMiniMaxPlatform(config, env), model: config.minimax.model });
+    platform: resolveMiniMaxPlatform(config, env), model: config.minimax.model, level: config.minimax.level });
   return getDeepSeekInfo(options);
 }
 
@@ -447,6 +453,8 @@ export async function render(input, config) {
   const env = config.segments.some((s) => s === 'auto' || PROVIDERS.includes(s)) && !config._demo
     ? await loadClaudeSettingsEnv() : {};
   config = { ...config, segments: resolveSegments(config, env) };
+  // 在 auto 解析和去重之后计数，同一家服务商不会因重复配置触发完整名称。
+  config._showProvider = config.segments.filter((s) => PROVIDERS.includes(s)).length > 1;
   const platform = resolvePlatform(config, env);
   const parts = {};
   const totalsPromise = config.segments.some((s) => ['tok', 'speed'].includes(s))
@@ -543,6 +551,10 @@ async function main() {
     const result = await setup();
     console.log(`已配置 Claude Code：${result.settingsPath}`);
     console.log(`用户配置：${result.configPath}`);
+    if (result.configBackupPath) {
+      console.log(`原状态栏配置备份：${result.configBackupPath}`);
+      console.log('状态栏配置已替换为默认配置，启用 tok、speed 和 auto。');
+    }
     if (result.backupPath) console.log(`原设置备份：${result.backupPath}`);
     console.log('重启 Claude Code 或开启新会话即可生效。');
     return;

@@ -17,7 +17,7 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 - 同一账号并发刷新时只发起一组请求，其他调用显示有效缓存或「GLM 刷新中」
 - 查询失败时，有效期内的旧数据标记「缓存」；超过兜底期限后停止显示
 
-可选的新分段示例（配置见下方）：
+默认启用会话用量与估算生成速度，显示示例（配置见下方）：
 
 ```text
 deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k ⚡11.7M | 150 tok/s | ¥97.81
@@ -26,13 +26,14 @@ deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k �
 - `tok`：整个主会话的累计用量，`↑` 为输入，`↓` 为输出，`⚡` 为缓存读取与创建之和。
 - `speed`：最近 5 次响应的估算生成速度，可用 `speedSamples` 调整到 1–20。
 - `deepseek`：DeepSeek 可用余额，支持人民币和美元；断网时可显示带「缓存」标记的旧余额。
-- `minimax`：MiniMax Token Plan 的 5 小时及每周剩余额度，支持国内与国际平台。
+- `minimax`：MiniMax M Plan 的 5 小时及每周剩余额度，支持国内与国际平台。
 - 深色终端按 `COLORFGBG` 的背景色选择亮色；支持 256 色时使用更清晰的蓝、紫、红色。
 
 ## 版本更新
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.9** · 2026-10-16 | 默认显示 token 和速度；首次升级备份并重置配置；修复 MiniMax 国内域名识别，统一精简显示 | 所有用户；升级需运行 `--setup`，原状态栏自定义配置会先备份再重置 |
 | **1.0.8** · 2026-10-16 | 自动识别 GLM / DeepSeek / MiniMax，新增会话 token 和估算速度，多服务商并发查询 | 使用多家服务商或关注会话用量的用户；已有配置需将服务商分段改为 `auto` |
 | **1.0.7** · 2026-10-14 | 新安装默认自动选择中英文标签和状态提示，可固定为中文或英文 | 希望跟随系统语言的用户；已有配置需将 `lang` 改为 `auto` |
 | **1.0.6** · 2026-10-14 | 补齐历史更新日志，npm 首页展示版本摘要，发布后自动生成 GitHub Release | 文档与发布流程更新；状态栏功能与 1.0.5 相同，已有 1.0.5 用户可按需升级 |
@@ -50,7 +51,8 @@ npx --yes @wenxingyu/glm-statusline@latest --setup
 ```
 
 Windows PowerShell 可将 `npx` 换成 `npx.cmd`。随后重启 Claude Code 或开启新会话。
-`--setup` 保留用户配置，并在替换状态栏命令前备份原设置；仅升级全局 npm 包不会更新已部署的运行文件。
+本次升级的 `--setup` 会先备份旧状态栏配置，再整体替换为新默认配置，自动启用 `tok`、`speed`、`auto`。
+替换仅执行一次，此后重复安装保留用户修改；仅升级全局 npm 包不会更新已部署的运行文件。
 
 ## 安装
 
@@ -87,9 +89,17 @@ glm-statusline --setup
 `--setup` 会：
 
 1. 将运行文件保存到 `~/.claude/glm-statusline/`，状态栏运行时不依赖 npx 缓存或网络下载。
-2. 创建用户配置 `~/.claude/glm-statusline.json`，已有配置保留。
+2. 创建用户配置 `~/.claude/glm-statusline.json`；首次迁移已有配置时先生成
+   `glm-statusline.json.backup-时间戳-唯一标识`，再整体替换为默认配置。
 3. 更新 `~/.claude/settings.json` 中的 `statusLine`，保留其他设置。
    如需替换已有设置，会先生成 `settings.json.backup-*` 备份。
+
+这次迁移会重置状态栏的分段、语言、服务商参数、缓存时间等自定义选项，
+但保留 Claude `settings.json` 中的 API Key、代理和权限等其他设置。
+旧状态栏配置按原始内容完整备份，安装完成会打印备份路径；备份失败时中止替换。
+如需恢复，将该备份复制回 `~/.claude/glm-statusline.json` 即可。
+迁移记录保存于 `~/.claude/glm-statusline/setup-state.json`，后续重复运行 `--setup`
+保留用户修改及手动恢复的配置，无需修改该记录。
 
 升级时重新执行上方带 `@latest` 的安装命令，再运行 `--setup` 更新固定目录中的运行文件。
 全局包本身升级不会自动覆盖已部署的运行文件。Linux/macOS 使用 Node.js 绝对路径，
@@ -137,7 +147,7 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `segments` | `["model","dir","git","ctx","auto"]` | 分段及顺序；`auto` 按接口域名自动选择服务商；另支持 `glm`、`deepseek`、`minimax` 固定服务商，以及 `tok` 会话用量、`speed` 生成速度 |
+| `segments` | `["model","dir","git","ctx","tok","speed","auto"]` | 分段及顺序；`tok` 会话用量、`speed` 估算生成速度默认启用；`auto` 按接口域名自动选择服务商，也可使用 `glm`、`deepseek`、`minimax` 固定服务商 |
 | `lang` | `auto` | 自动选择标签和状态提示语言；`zh` 固定中文（周），`en` 固定英文（wk） |
 | `glm.platform` | `auto` | `cn`（open.bigmodel.cn）/ `en`（api.z.ai）/ `auto`（按 `ANTHROPIC_BASE_URL` 判断） |
 | `glm.showBalance` | `true` | 是否查询并显示按量付费余额 |
@@ -149,12 +159,14 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | `speedSamples` | `5` | 速度使用的最近响应数，范围 1–20，取整数 |
 | `minimax.platform` | `auto` | `cn` 国内 / `en` 国际 / `auto` 按 `ANTHROPIC_BASE_URL` 识别，未识别时使用国内平台 |
 | `minimax.model` | `auto` | 额度池名称；自动优先选择 `general`，仅有一项时选该项；多项且无 `general` 时需显式填写接口的 `model_name` |
+| `minimax.level` | `auto` | `go` / `explore` / `build` 手动指定官方档位名称；`auto` 不猜测，当前额度接口未提供档位时隐藏 |
+| `minimax.showLevel` | `true` | 是否显示已配置的 MiniMax 档位名称 |
 
 ### 自动识别服务商（默认）
 
 ```json
 {
-  "segments": ["model", "dir", "git", "ctx", "auto"]
+  "segments": ["model", "dir", "git", "ctx", "tok", "speed", "auto"]
 }
 ```
 
@@ -164,7 +176,7 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 |---|---|
 | `bigmodel.cn`、`z.ai` 及其子域 | GLM 额度及可选余额 |
 | `api.deepseek.com` | DeepSeek 余额 |
-| `minimaxi.com`、`minimax.io`、`minimax.chat` 及其子域 | MiniMax 额度 |
+| `minimaxi.com`、`minimax.cn`、`minimax.io`、`minimax.chat` 及其子域 | MiniMax 额度 |
 
 识别、通用 Key 和国内/国际平台选择使用同一来源规则：Claude `settings.json` 的
 `env` 中存在通用 Key 时优先使用该来源的 URL，否则优先使用进程环境的 URL；
@@ -179,8 +191,9 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 查询仍使用该服务商的官方接口。`auto` 可与手动分段并用，解析后相同服务商只保留首次出现的位置，
 只查询和显示一次。`--demo` 中的 `auto` 固定展示 GLM 假数据。
 
-新安装默认启用 `auto`。升级保留已有配置；老用户更新运行文件后，将 `segments` 中
-固定的服务商分段（例如 `glm`）替换为 `auto` 即可启用自动识别。
+新安装默认启用 `tok`、`speed` 和 `auto`；不需要会话用量或速度时，可移除对应分段。
+本次升级运行 `--setup` 时会备份并替换旧状态栏配置，自动启用上述默认显示；
+此后可自由调整分段，重复安装保留调整后的配置。
 
 ### MiniMax
 
@@ -195,15 +208,30 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 ```
 
 显示示例：`MiniMax 5h 62% (2h12m) · 周 88% (3d4h)`。
-将 Token Plan 的订阅 Key 放入进程环境或 Claude `settings.json` 的
+档位名称使用最新官方 [M Plan](https://platform.minimax.cn/docs/m-plan/intro) 的
+Go / Explore / Build，不区分极速版。
+[官方 CLI 的额度响应定义](https://github.com/MiniMax-AI/cli/blob/main/src/types/api.ts)
+没有档位字段，官方也没有公布旧 `total_count` 数值与新档位的固定映射，因此默认不推断档位。
+如果需要显示，可按自己的订阅设置 `"minimax": { "level": "go" }`，
+单家显示为 `Go 5h 62% · 周 88%`；`minimax.showLevel: false` 可关闭档位显示。
+手动配置只改变档位标签，不改变查询账号、额度池或百分比。
+`--query` 的 `level` 为手动配置的档位，默认 `null`；旧缓存中的推断档位会被忽略。
+
+额度和余额默认精简显示：单家服务商时，GLM 显示 `PRO · 5h 62% · 周 88%`，
+MiniMax 有已配置的档位时显示 `Go 5h 62% · 周 88%`，DeepSeek 显示 `¥97.81`。
+同时启用多家时自动加上 `GLM`、`MiniMax`、`DeepSeek` 名称，仍按配置顺序显示。
+MiniMax 没有显示档位时保留 `MiniMax` 名称。未配置 Key、查询失败等状态始终保留服务商名。
+服务商数量在 `auto` 解析并去重后计算，`auto` 与同一家手动分段并用不会重复显示或增加前缀。
+
+将订阅 Key 放入进程环境或 Claude `settings.json` 的
 `env.MINIMAX_API_KEY`（进程环境优先）。也可复用现有 `ANTHROPIC_AUTH_TOKEN` /
 `ANTHROPIC_API_KEY`，其 `ANTHROPIC_BASE_URL` 必须是 MiniMax 域名：
-`minimaxi.com` / `minimax.io` / 旧 `minimax.chat` 及其子域；其他服务商的 Key 会提示不匹配。
+`minimaxi.com` / `minimax.cn` / `minimax.io` / 旧 `minimax.chat` 及其子域；其他服务商的 Key 会提示不匹配。
 国际平台 URL（例如 `https://api.minimax.io/anthropic`）自动选择 `en`，
-国内 URL（例如 `https://api.minimaxi.com/anthropic`）选择 `cn`。
+国内 URL（例如 `https://api.minimaxi.com/anthropic` 或 `https://api.minimax.cn/anthropic`）选择 `cn`。
 仅设置专用 Key 而没有 MiniMax base URL 时，国际账号请显式配置 `"platform": "en"`。
 
-本段查询 [MiniMax 官方 Token Plan 额度接口](https://platform.minimaxi.com/subscribe/coding-plan)，
+本段查询 MiniMax 官方额度接口（参见 [M Plan 用量说明](https://platform.minimax.cn/docs/m-plan/usage-rules)），
 显示套餐剩余比例与重置倒计时，不包含按量付费账户的现金余额。
 优先使用 `general` 额度池，不将多个模型的共享额度相加。剩余比例读取
 `current_interval_remaining_percent` / `current_weekly_remaining_percent`；
@@ -259,8 +287,8 @@ Claude settings.env 中的 `GLM_API_KEY` / `DEEPSEEK_API_KEY`，进程环境优�
 这里跟随的是进程可见的区域语言，不读取 Claude Code 的界面语言设置。
 修改系统或终端语言后，请重新打开终端并启动 Claude Code，使新的区域设置传入状态栏进程。
 
-新安装默认使用 `auto`。升级会保留已有的 `"lang": "zh"` 或 `"lang": "en"`；
-希望自动切换的老用户，更新运行文件后请将 `~/.claude/glm-statusline.json` 中的 `lang` 改为 `"auto"`。
+新安装和本次配置迁移默认使用 `auto`。原有的 `"lang": "zh"` 或 `"lang": "en"` 会随旧配置备份；
+迁移后仍可在 `~/.claude/glm-statusline.json` 中手动指定语言，后续重复安装保留该设置。
 显式指定 `zh` / `en` 时不受系统或终端语言影响。
 
 可以用环境变量 `GLM_STATUSLINE_CONFIG` 指定其他配置文件。字段类型或范围无效时，

@@ -6,6 +6,7 @@ import { fetchWithProxy } from './proxy.mjs';
 import { cachedQuery } from './cache.mjs';
 
 export const MINIMAX_BASE = { cn: 'https://www.minimaxi.com', en: 'https://www.minimax.io' };
+const LEVELS = new Set(['go', 'explore', 'build']);
 const numeric = (v) => (typeof v === 'number' || typeof v === 'string' && v.trim() !== '') &&
   Number.isFinite(Number(v)) ? Number(v) : null;
 
@@ -34,17 +35,19 @@ export function parseMiniMaxPlan(body, { model = 'auto', now = Date.now() } = {}
   const weekly = windowQuota(entry, 'current_weekly', 'weekly_end_time', 'weekly_remains_time', now);
   // usage_count has differed between endpoints; never invent a percentage from ambiguous counts.
   if (!five && !weekly) throw new Error('No reliable MiniMax quota percentage');
-  return { model: entry.model_name, five, weekly };
+  // The official quota schema has no tier; counts do not identify an M Plan tier.
+  return { model: entry.model_name, level: null, five, weekly };
 }
 
 function validValue(value) {
   if (!value || typeof value.model !== 'string' || (!value.five && !value.weekly)) return false;
+  // Any level left by an older cache is ignored; only quota data is reused.
   return [value.five, value.weekly].every((q) => q === null || q &&
     Number.isFinite(q.usedPct) && q.usedPct >= 0 && q.usedPct <= 100 &&
     (q.resetMs === null || Number.isFinite(q.resetMs)));
 }
 
-export async function getMiniMaxInfo({ key, platform = 'cn', model = 'auto', ttlSec = 60,
+export async function getMiniMaxInfo({ key, platform = 'cn', model = 'auto', level = 'auto', ttlSec = 60,
   staleSec = 1800, timeoutMs = 5000, force = false, proxyEnv = process.env,
   cacheDir = path.join(os.tmpdir(), 'glm-statusline-v2') }) {
   platform = platform === 'en' ? 'en' : 'cn';
@@ -61,5 +64,6 @@ export async function getMiniMaxInfo({ key, platform = 'cn', model = 'auto', ttl
       return parseMiniMaxPlan(await res.json(), { model });
     },
   });
-  return { ...info, model: value?.model ?? null, five: value?.five ?? null, weekly: value?.weekly ?? null };
+  return { ...info, model: value?.model ?? null, level: value && LEVELS.has(level) ? level : null,
+    five: value?.five ?? null, weekly: value?.weekly ?? null };
 }

@@ -34,6 +34,8 @@ test('setup preserves existing settings, backs them up and deploys a working sta
     encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath },
   });
   assert.match(demo, /5h 62%/);
+  assert.match(demo, /tok 11\.9M/);
+  assert.match(demo, /150 tok\/s/);
   assert.equal(execFileSync(process.execPath, [script, '--version'], { encoding: 'utf8' }).trim(), version);
 });
 
@@ -41,19 +43,112 @@ test('setup initializes a new configuration and repeat setup preserves user pref
   const claudeDir = await temp(t);
   const initial = await setup({ claudeDir });
   assert.equal(initial.backupPath, null);
+  assert.equal(initial.configBackupPath, null);
   assert.equal(JSON.parse(await fs.readFile(initial.configPath, 'utf8')).lang, 'auto');
   assert.deepEqual(JSON.parse(await fs.readFile(initial.configPath, 'utf8')).segments,
-    ['model', 'dir', 'git', 'ctx', 'auto']);
+    ['model', 'dir', 'git', 'ctx', 'tok', 'speed', 'auto']);
   const config = JSON.stringify({ segments: ['glm'], glm: { showBalance: false }, lang: 'en' });
   await fs.writeFile(initial.configPath, config);
   const second = await setup({ claudeDir });
   assert.equal(second.backupPath, null);
+  assert.equal(second.configBackupPath, null);
   assert.equal(await fs.readFile(initial.configPath, 'utf8'), config);
   const demo = execFileSync(process.execPath, [path.join(initial.installDir, 'statusline.mjs'), '--demo'], {
     encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: initial.configPath },
   });
   assert.match(demo, /wk/);
   assert.ok(!demo.includes('¥'));
+});
+
+test('upgrade backs up the entire old config, replaces it once and allows restoring it', async (t) => {
+  const claudeDir = await temp(t);
+  await fs.mkdir(claudeDir, { recursive: true });
+  const configPath = path.join(claudeDir, 'glm-statusline.json');
+  const oldConfig = Buffer.from('\uFEFF{\r\n  "segments": ["glm"], "lang": "zh", "timeoutMs": 1234\r\n}\r\n');
+  const settings = { env: { ANTHROPIC_AUTH_TOKEN: 'fixture-key' }, permissions: { allow: ['Read'] } };
+  await fs.writeFile(configPath, oldConfig);
+  await fs.writeFile(path.join(claudeDir, 'settings.json'), JSON.stringify(settings));
+  const result = await setup({ claudeDir });
+  assert.ok(result.configBackupPath.startsWith(`${configPath}.backup-`));
+  assert.deepEqual(await fs.readFile(result.configBackupPath), oldConfig);
+  const defaults = await fs.readFile(new URL('../config.json', import.meta.url));
+  assert.deepEqual(await fs.readFile(configPath), defaults);
+  const currentSettings = JSON.parse(await fs.readFile(result.settingsPath, 'utf8'));
+  assert.deepEqual(currentSettings.env, settings.env);
+  assert.deepEqual(currentSettings.permissions, settings.permissions);
+  assert.deepEqual(JSON.parse(await fs.readFile(result.backupPath, 'utf8')), settings);
+  const second = await setup({ claudeDir });
+  assert.equal(second.configBackupPath, null);
+  assert.equal(second.backupPath, null);
+  await fs.copyFile(result.configBackupPath, configPath);
+  assert.equal((await setup({ claudeDir })).configBackupPath, null);
+  assert.deepEqual(await fs.readFile(configPath), oldConfig);
+  assert.equal((await fs.readdir(claudeDir)).filter((name) => name.startsWith('glm-statusline.json.backup-')).length, 1);
+});
+
+test('backup failure aborts migration without modifying the old config or Claude settings', async (t) => {
+  const claudeDir = await temp(t);
+  await fs.mkdir(claudeDir, { recursive: true });
+  const configPath = path.join(claudeDir, 'glm-statusline.json');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  await fs.writeFile(configPath, '{broken legacy config');
+  await fs.writeFile(settingsPath, '{"env":{"CUSTOM":"keep"}}');
+  const write = fs.writeFile.bind(fs);
+  const mocked = t.mock.method(fs, 'writeFile', async (file, ...args) => {
+    if (String(file).startsWith(`${configPath}.backup-`)) throw new Error('backup denied');
+    return write(file, ...args);
+  });
+  await assert.rejects(setup({ claudeDir }), /backup denied/);
+  assert.equal(await fs.readFile(configPath, 'utf8'), '{broken legacy config');
+  assert.equal(await fs.readFile(settingsPath, 'utf8'), '{"env":{"CUSTOM":"keep"}}');
+  const statePath = path.join(claudeDir, 'glm-statusline', 'setup-state.json');
+  await assert.rejects(fs.access(statePath), { code: 'ENOENT' });
+  mocked.mock.restore();
+  const result = await setup({ claudeDir });
+  assert.equal(await fs.readFile(result.configBackupPath, 'utf8'), '{broken legacy config');
+  assert.ok(JSON.parse(await fs.readFile(configPath, 'utf8')).segments.includes('tok'));
+});
+
+test('replacement failure leaves the old config and a backup and can be retried', async (t) => {
+  const claudeDir = await temp(t);
+  await fs.mkdir(claudeDir, { recursive: true });
+  const configPath = path.join(claudeDir, 'glm-statusline.json');
+  const original = '{"segments":[]}';
+  await fs.writeFile(configPath, original);
+  const rename = fs.rename.bind(fs);
+  const mocked = t.mock.method(fs, 'rename', async (source, destination) => {
+    if (destination === configPath) throw new Error('replacement denied');
+    return rename(source, destination);
+  });
+  await assert.rejects(setup({ claudeDir }), /replacement denied/);
+  assert.equal(await fs.readFile(configPath, 'utf8'), original);
+  const files = await fs.readdir(claudeDir);
+  assert.ok(!files.some((name) => name.endsWith('.tmp')));
+  const backup = files.find((name) => name.startsWith('glm-statusline.json.backup-'));
+  assert.equal(await fs.readFile(path.join(claudeDir, backup), 'utf8'), original);
+  await assert.rejects(fs.access(path.join(claudeDir, 'glm-statusline', 'setup-state.json')), { code: 'ENOENT' });
+  mocked.mock.restore();
+  assert.ok((await setup({ claudeDir })).configBackupPath);
+});
+
+test('installed setup reports the config backup and subsequent setup preserves edits', async (t) => {
+  const claudeDir = await temp(t);
+  await fs.mkdir(claudeDir, { recursive: true });
+  const configPath = path.join(claudeDir, 'glm-statusline.json');
+  const original = '{"segments":["deepseek"],"lang":"en"}';
+  await fs.writeFile(configPath, original);
+  const home = path.dirname(claudeDir);
+  const script = fileURLToPath(new URL('../statusline.mjs', import.meta.url));
+  const options = { encoding: 'utf8', timeout: 10000, env: { ...process.env, HOME: home, USERPROFILE: home } };
+  const output = execFileSync(process.execPath, [script, '--setup'], options);
+  assert.match(output, /glm-statusline\.json\.backup-/);
+  assert.match(output, /启用 tok、speed 和 auto/);
+  const backup = (await fs.readdir(claudeDir)).find((name) => name.startsWith('glm-statusline.json.backup-'));
+  assert.equal(await fs.readFile(path.join(claudeDir, backup), 'utf8'), original);
+  await fs.writeFile(configPath, original);
+  const next = execFileSync(process.execPath, [path.join(claudeDir, 'glm-statusline', 'statusline.mjs'), '--setup'], options);
+  assert.doesNotMatch(next, /原状态栏配置备份/);
+  assert.equal(await fs.readFile(configPath, 'utf8'), original);
 });
 
 test('installed runtime supports the new token, speed, DeepSeek and MiniMax segments', async (t) => {
@@ -63,7 +158,7 @@ test('installed runtime supports the new token, speed, DeepSeek and MiniMax segm
   const demo = execFileSync(process.execPath, [script, '--demo'], {
     encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath },
   }).replace(/\x1b\[[0-9;]*m/g, '').trim();
-  assert.match(demo, /^tok .* \| 150 tok\/s \| ¥97\.81 \| MiniMax 5h 62% · wk 88%$/);
+  assert.match(demo, /^tok .* \| 150 tok\/s \| DeepSeek ¥97\.81 \| MiniMax 5h 62% · wk 88%$/);
 });
 
 test('installed MiniMax query and status line use settings credentials and selected region', async (t) => {
@@ -72,7 +167,7 @@ test('installed MiniMax query and status line use settings credentials and selec
   settings.env = { MINIMAX_API_KEY: 'fixture-subscription-key' };
   await fs.writeFile(result.settingsPath, JSON.stringify(settings));
   await fs.writeFile(result.configPath, JSON.stringify({ segments: ['minimax'], lang: 'en',
-    minimax: { platform: 'en' }, cacheTtlSeconds: 0 }));
+    minimax: { platform: 'en', level: 'build' }, cacheTtlSeconds: 0 }));
   const script = path.join(result.installDir, 'statusline.mjs');
   const home = path.dirname(path.dirname(result.settingsPath));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -91,8 +186,10 @@ test('installed MiniMax query and status line use settings credentials and selec
       await import(${JSON.stringify(pathToFileURL(script).href)});`;
     const output = execFileSync(process.execPath, ['--input-type=module', '-e', code],
       { encoding: 'utf8', input: '{}', env, timeout: 10000 });
-    if (args.length) assert.equal(JSON.parse(output).five.usedPct, 38);
-    else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), 'MiniMax 5h 62% · wk 88%');
+    if (args.length) {
+      assert.equal(JSON.parse(output).five.usedPct, 38);
+      assert.equal(JSON.parse(output).level, 'build');
+    } else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), 'Build 5h 62% · wk 88%');
   }
 });
 
@@ -113,6 +210,9 @@ test('installed auto routes both query and rendering to the selected provider an
       { balance_infos: [{ currency: 'CNY', total_balance: '97.81' }] }, '¥97.81'],
     ['https://api.minimaxi.com/anthropic', 'minimax', 'https://www.minimaxi.com/v1/token_plan/remains',
       { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
+    ['https://api.minimax.cn/anthropic', 'minimax', 'https://www.minimaxi.com/v1/token_plan/remains',
+      { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 99,
+        current_interval_total_count: 1500, current_weekly_remaining_percent: 39 }] }, 'MiniMax 5h 99% · wk 39%'],
     ['https://api.minimax.io/anthropic', 'minimax', 'https://www.minimax.io/v1/token_plan/remains',
       { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
   ]) {
@@ -137,7 +237,11 @@ test('installed auto routes both query and rendering to the selected provider an
       const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
         encoding: 'utf8', input: '{"model":{"display_name":"session"}}', env, timeout: 10000,
       });
-      if (args.length) assert.equal(JSON.parse(output).ok, true);
+      if (args.length) {
+        const info = JSON.parse(output);
+        assert.equal(info.ok, true);
+        if (base === 'https://api.minimax.cn/anthropic') assert.equal(info.level, null);
+      }
       else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), `session | ${expected}`);
     }
   }
@@ -177,7 +281,7 @@ test('providers run concurrently while rendering and query JSON preserve configu
       const data = JSON.parse(output);
       assert.deepEqual(Object.keys(data), ['deepseek', 'glm', 'minimax']);
       assert.ok(Object.values(data).every((info) => info.ok));
-    } else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), '¥42.00 | 5h 62% | MiniMax 5h 62%');
+    } else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), 'DeepSeek ¥42.00 | GLM 5h 62% | MiniMax 5h 62%');
   }
 });
 

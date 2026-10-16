@@ -18,6 +18,52 @@ function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+async function readOptional(file) {
+  try { return await fs.readFile(file); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    return null;
+  }
+}
+
+async function atomicWrite(file, contents) {
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, contents, { flag: 'wx', mode: 0o600 });
+    await fs.rename(tmp, file);
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+async function installConfig(configPath, installDir) {
+  // 独立记录这次迁移；用户之后编辑或恢复配置，不会再次触发覆盖。
+  const statePath = path.join(installDir, 'setup-state.json');
+  const stateBytes = await readOptional(statePath);
+  let state = {};
+  if (stateBytes !== null) {
+    try { state = JSON.parse(stateBytes.toString('utf8')); } catch {
+      throw new Error(`安装状态不是有效 JSON，请先修复：${statePath}`);
+    }
+    if (!Number.isInteger(state?.configRevision) || state.configRevision < 1) {
+      throw new Error(`安装状态无效，请先修复：${statePath}`);
+    }
+  }
+  const original = await readOptional(configPath);
+  const migrate = stateBytes === null;
+  let configBackupPath = null;
+  if (original === null || migrate) {
+    const defaults = await fs.readFile(path.join(SOURCE_DIR, 'config.json'));
+    if (original !== null) {
+      configBackupPath = `${configPath}.backup-${Date.now()}-${randomUUID()}`;
+      // 原始字节备份成功后才替换；即使旧 JSON 损坏也能完整恢复。
+      await fs.writeFile(configBackupPath, original, { flag: 'wx', mode: 0o600 });
+    }
+    await atomicWrite(configPath, defaults);
+  }
+  if (migrate) await atomicWrite(statePath, `${JSON.stringify({ configRevision: 1 })}\n`);
+  return configBackupPath;
+}
+
 export async function setup({ claudeDir = path.join(os.homedir(), '.claude') } = {}) {
   const settingsPath = path.join(claudeDir, 'settings.json');
   const configPath = path.join(claudeDir, 'glm-statusline.json');
@@ -49,11 +95,7 @@ export async function setup({ claudeDir = path.join(os.homedir(), '.claude') } =
     const destination = path.join(installDir, file);
     if (source !== destination) await fs.copyFile(source, destination);
   }
-  try {
-    await fs.writeFile(configPath, await fs.readFile(path.join(SOURCE_DIR, 'config.json')), { flag: 'wx', mode: 0o600 });
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-  }
+  const configBackupPath = await installConfig(configPath, installDir);
 
   let backupPath = null;
   if (settings.statusLine?.type !== 'command' || settings.statusLine?.command !== command) {
@@ -62,13 +104,7 @@ export async function setup({ claudeDir = path.join(os.homedir(), '.claude') } =
       await fs.writeFile(backupPath, original, { flag: 'wx', mode: 0o600 });
     }
     settings.statusLine = { type: 'command', command };
-    const tmp = `${settingsPath}.${randomUUID()}.tmp`;
-    try {
-      await fs.writeFile(tmp, `${JSON.stringify(settings, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-      await fs.rename(tmp, settingsPath);
-    } finally {
-      await fs.unlink(tmp).catch(() => {});
-    }
+    await atomicWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
-  return { settingsPath, configPath, backupPath, installDir };
+  return { settingsPath, configPath, backupPath, configBackupPath, installDir };
 }

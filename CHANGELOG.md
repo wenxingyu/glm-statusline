@@ -10,7 +10,19 @@ npx --yes @wenxingyu/glm-statusline@latest --setup
 ```
 
 Windows PowerShell 可使用 `npx.cmd`。完成后重启 Claude Code 或开启新会话。
-已有用户配置会保留，替换状态栏命令前会备份原设置。
+从旧版首次升级至 1.0.9 时，会先备份旧状态栏配置，再整体替换为新默认配置；此后重复安装保留用户修改。
+替换 Claude 状态栏命令前仍会备份原设置。
+
+## 1.0.9 - 2026-10-16
+
+- 单家服务商默认精简显示档位或余额，多家同时启用时自动加服务商名称；MiniMax 未显示档位及异常提示保留名称，按 `auto` 解析并去重后的服务商数量判断。
+- MiniMax 档位名称使用最新官方 M Plan 的 Go / Explore / Build，不区分极速版；额度接口未提供档位时不猜测、不使用旧总额映射。可用 `minimax.level` 手动设置标签，`minimax.showLevel` 控制显示。额度百分比计算不变。
+- 修复 MiniMax 国内接口 `minimax.cn` 及其子域未被识别的问题：`auto` 正常显示额度，通用 Claude Key 不再被误判为服务商不匹配，额度仍通过国内查询接口获取。
+- 新安装默认启用 `tok` 会话累计用量和 `speed` 估算生成速度，顺序为 `model`、`dir`、`git`、`ctx`、`tok`、`speed`、`auto`。
+- 首次升级时完整备份并整体替换旧状态栏配置，自动启用 `tok`、`speed`、`auto`；备份失败时中止替换。
+- 迁移仅执行一次，后续重复安装保留用户修改；安装输出备份路径，可复制备份恢复原配置。Claude 的 API Key 等其他设置保留。
+
+**升级提示：** 运行 `--setup` 更新运行文件。本次首次迁移会备份并重置状态栏配置，自动启用 `tok`、`speed`、`auto`；如需恢复自定义配置，可将安装输出的 `glm-statusline.json.backup-*` 备份复制回原路径。MiniMax 档位可在迁移后按订阅设置 `minimax.level` 为 `go`、`explore` 或 `build`；默认仅显示额度，不猜测档位。
 
 ## 1.0.8 - 2026-10-16
 

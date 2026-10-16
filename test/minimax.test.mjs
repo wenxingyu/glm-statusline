@@ -45,6 +45,67 @@ test('quota parsing preserves zero, handles numeric strings, absolute timestamps
   assert.equal(result.weekly.resetMs, 1800086400000);
 });
 
+test('MiniMax does not infer M Plan tiers from historical counts or invent API tier fields', () => {
+  for (const total of [600, 1500, 4500, 30000]) {
+    for (const count of [total, String(total)]) {
+      const result = parseMiniMaxPlan(body([entry({ current_interval_total_count: count,
+        current_interval_usage_count: 151, current_interval_remaining_percent: 89 })]));
+      assert.equal(result.level, null);
+      assert.equal(result.five.usedPct, 11);
+      assert.equal(strip(renderMiniMax(result, { lang: 'en' })), 'MiniMax 5h 89% · wk 88%');
+    }
+  }
+});
+
+test('unknown totals or unrelated quota models do not invent a tier or hide valid percentages', () => {
+  for (const total of [undefined, null, 0, -1, 599, 600, 600.1, 1000, 15000, 30001, false, '', ' ', [], {}, Infinity]) {
+    const result = parseMiniMaxPlan(body([entry({ current_interval_total_count: total })]));
+    assert.equal(result.level, null);
+    assert.equal(result.five.usedPct, 38);
+    assert.equal(strip(renderMiniMax(result, { lang: 'en' })), 'MiniMax 5h 62% · wk 88%');
+  }
+  for (const model_name of ['image', 'speech']) {
+    assert.equal(parseMiniMaxPlan(body([entry({ model_name, current_interval_total_count: 1500 })])).level, null);
+  }
+});
+
+test('configured tiers use official spelling and can be hidden without changing quota', () => {
+  const result = parseMiniMaxPlan(body());
+  for (const [level, label] of [['go', 'Go'], ['explore', 'Explore'], ['build', 'Build']]) {
+    assert.equal(strip(renderMiniMax(result, { lang: 'en', minimax: { level } })),
+      `${label} 5h 62% · wk 88%`);
+    assert.equal(strip(renderMiniMax(result, { lang: 'en', minimax: { level }, _showProvider: true })),
+      `MiniMax ${label} 5h 62% · wk 88%`);
+    assert.equal(strip(renderMiniMax(result, { lang: 'en', minimax: { level, showLevel: false } })),
+      'MiniMax 5h 62% · wk 88%');
+  }
+});
+
+test('configured tiers apply immediately to cache hits while old inferred tiers are ignored', async (t) => {
+  const s = await setup(t);
+  s.data(body([entry({ current_interval_total_count: 1500 })]));
+  assert.equal((await s.query()).level, null);
+  assert.equal((await s.query({ level: 'go' })).level, 'go');
+  assert.equal((await s.query({ level: 'explore' })).level, 'explore');
+  assert.equal((await s.query({ level: 'build' })).level, 'build');
+  assert.equal(s.requests.length, 1);
+  s.tick(61000); s.fail();
+  const cached = await s.query();
+  assert.equal(cached.level, null);
+  assert.equal(cached.stale, true);
+  const file = path.join(s.cacheDir, (await fs.readdir(s.cacheDir)).find((name) => name.endsWith('.json')));
+  const old = JSON.parse(await fs.readFile(file, 'utf8'));
+  old.value.level = 'go';
+  await fs.writeFile(file, JSON.stringify(old));
+  const legacy = await s.query();
+  assert.equal(legacy.ok, true);
+  assert.equal(legacy.level, null);
+  assert.equal(legacy.five.usedPct, 38);
+  assert.equal((await s.query({ level: 'build' })).level, 'build');
+  s.tick(1800000);
+  assert.equal((await s.query()).level, null);
+});
+
 test('MiniMax selects the general pool or explicit model and never sums different model pools', () => {
   const data = body([entry({ model_name: 'image', current_interval_remaining_percent: 99 }), entry()]);
   assert.equal(parseMiniMaxPlan(data).five.usedPct, 38);
@@ -69,18 +130,26 @@ test('invalid percentages and ambiguous count-only payloads remain unknown', () 
 test('MiniMax configuration accepts its segment, platform and model with safe defaults', () => {
   const config = normalizeConfig({ segments: ['minimax', 'tok', 'minimax'], minimax: { platform: 'en', model: ' general ' } });
   assert.deepEqual(config.segments, ['minimax', 'tok']);
-  assert.deepEqual(config.minimax, { platform: 'en', model: 'general' });
-  assert.deepEqual(normalizeConfig({ minimax: { platform: 'bad', model: '' } }).minimax, { platform: 'auto', model: 'auto' });
+  assert.deepEqual(config.minimax, { platform: 'en', model: 'general', level: 'auto', showLevel: true });
+  assert.deepEqual(normalizeConfig({ minimax: { platform: 'bad', model: '', showLevel: 'false' } }).minimax,
+    { platform: 'auto', model: 'auto', level: 'auto', showLevel: true });
+  assert.equal(normalizeConfig({ minimax: { showLevel: false } }).minimax.showLevel, false);
+  for (const level of ['auto', 'go', 'explore', 'build']) {
+    assert.equal(normalizeConfig({ minimax: { level } }).minimax.level, level);
+  }
+  for (const level of ['starter', 'plus', 'max', 'ultra', 'go-highspeed', 'GO', '', null]) {
+    assert.equal(normalizeConfig({ minimax: { level } }).minimax.level, 'auto');
+  }
 });
 
 test('MiniMax credentials support dedicated keys and reject other providers and lookalike domains', () => {
-  for (const domain of ['api.minimaxi.com', 'api.minimax.io', 'api.minimax.chat']) {
+  for (const domain of ['api.minimaxi.com', 'api.minimax.cn', 'api.minimax.io', 'api.minimax.chat']) {
     const env = { ANTHROPIC_AUTH_TOKEN: 'subscription-key', ANTHROPIC_BASE_URL: `https://${domain}/anthropic` };
     assert.equal(resolveCredential('minimax', env, {}).key, 'subscription-key');
     assert.equal(resolveCredential('glm', env, {}).mismatch, true);
     assert.equal(resolveCredential('deepseek', env, {}).mismatch, true);
   }
-  for (const domain of ['api.deepseek.com', 'api.minimax.io.evil.test']) {
+  for (const domain of ['api.deepseek.com', 'api.minimax.io.evil.test', 'api.minimax.cn.evil.test', 'evilminimax.cn']) {
     assert.equal(resolveCredential('minimax', { ANTHROPIC_API_KEY: 'test', ANTHROPIC_BASE_URL: `https://${domain}` }, {}).mismatch, true);
   }
   assert.equal(resolveCredential('minimax', { MINIMAX_API_KEY: 'settings' }, { MINIMAX_API_KEY: 'process' }).key, 'process');
@@ -92,6 +161,7 @@ test('MiniMax platform auto detection respects domain boundaries and explicit co
   assert.equal(resolveMiniMaxPlatform(config, {}, {}), 'cn');
   assert.equal(resolveMiniMaxPlatform(config, {}, { ANTHROPIC_BASE_URL: 'https://api.minimax.io/anthropic' }), 'en');
   assert.equal(resolveMiniMaxPlatform(config, { ANTHROPIC_BASE_URL: 'https://api.minimaxi.com/anthropic' }, {}), 'cn');
+  assert.equal(resolveMiniMaxPlatform(config, { ANTHROPIC_BASE_URL: 'https://api.minimax.cn/anthropic' }, {}), 'cn');
   assert.equal(resolveMiniMaxPlatform(config, { ANTHROPIC_BASE_URL: 'https://api.minimax.io.evil.test' }, {}), 'cn');
   assert.equal(resolveMiniMaxPlatform(normalizeConfig({ minimax: { platform: 'en' } }), {}, {}), 'en');
 });

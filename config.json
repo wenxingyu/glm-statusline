@@ -1,7 +1,7 @@
 {
-  "segments": ["model", "dir", "git", "ctx", "auto"],
+  "segments": ["model", "dir", "git", "ctx", "tok", "speed", "auto"],
   "lang": "auto",
-  "minimax": { "platform": "auto", "model": "auto" },
+  "minimax": { "platform": "auto", "model": "auto", "level": "auto", "showLevel": true },
   "glm": {
     "platform": "auto",
     "showBalance": true,
