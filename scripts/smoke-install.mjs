@@ -18,7 +18,8 @@ const npm = (...args) => execFileSync(process.execPath, [npmCli, ...args], optio
 try {
   const [packed] = JSON.parse(npm('pack', '--json', '--pack-destination', root));
   assert.deepEqual(packed.files.map((file) => file.path).sort(),
-    ['CHANGELOG.md', 'LICENSE', 'README.md', 'config.json', 'glm.mjs', 'package.json', 'proxy.mjs', 'setup.mjs', 'statusline.mjs']);
+    ['CHANGELOG.md', 'LICENSE', 'README.md', 'cache.mjs', 'config.json', 'deepseek.mjs', 'glm.mjs',
+      'minimax.mjs', 'package.json', 'proxy.mjs', 'setup.mjs', 'statusline.mjs', 'tokens.mjs']);
   const tarball = path.join(root, packed.filename);
   const prefix = path.join(root, 'global install');
   npm('install', '-g', '--prefix', prefix, '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarball);

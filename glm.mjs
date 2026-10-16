@@ -21,7 +21,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { writeCache, acquireLock, recoverLock } from './cache.mjs';
 import { fetchWithProxy } from './proxy.mjs';
 
 const CACHE_DIR = path.join(os.tmpdir(), 'glm-statusline-v2');
@@ -151,66 +152,6 @@ async function readCache(file) {
     return { plan: validEntry(cache.plan, true), balance: validEntry(cache.balance, false) };
   } catch {
     return {};
-  }
-}
-
-async function writeCache(file, cache) {
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify({ version: 2, ...cache }), { mode: 0o600 });
-    await fs.rename(tmp, file);
-  } catch (e) {
-    // 缓存写失败不影响主流程
-    if (process.env.GLM_STATUSLINE_DEBUG) console.error('缓存写入失败:', e.message);
-  } finally {
-    await fs.unlink(tmp).catch(() => {});
-  }
-}
-
-// 独占文件锁：其他进程立即返回可用缓存，不阻塞状态栏等待网络。
-async function acquireLock(file) {
-  const lock = `${file}.lock`;
-  try {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-  } catch {
-    return async () => {}; // 缓存目录不可用时仍允许查询
-  }
-  try {
-    const handle = await fs.open(lock, 'wx', 0o600);
-    try {
-      await handle.writeFile(String(process.pid));
-    } finally {
-      await handle.close();
-    }
-    return async () => { await fs.unlink(lock).catch(() => {}); };
-  } catch (e) {
-    if (e.code !== 'EEXIST') return async () => {}; // 临时目录不可写时仍允许查询
-    return null;
-  }
-}
-
-// 崩溃进程留下的锁由独立的回收锁串行清理，避免多个进程误删新锁。
-async function recoverLock(file) {
-  const recovery = `${file}.recovery`;
-  let handle;
-  try {
-    handle = await fs.open(recovery, 'wx', 0o600);
-    const lock = `${file}.lock`;
-    const pid = Number(await fs.readFile(lock, 'utf8'));
-    if (Number.isInteger(pid) && pid > 0) {
-      try { process.kill(pid, 0); } catch (e) {
-        if (e.code === 'ESRCH') await fs.unlink(lock);
-      }
-    } else {
-      const stat = await fs.stat(lock);
-      if (Date.now() - stat.mtimeMs > 120_000) await fs.unlink(lock);
-    }
-  } catch { /* 锁正被创建、回收，或无权限时保留 */ }
-  finally {
-    if (handle) {
-      await handle.close().catch(() => {});
-      await fs.unlink(recovery).catch(() => {});
-    }
   }
 }
 

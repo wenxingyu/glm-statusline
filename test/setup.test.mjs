@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setup } from '../setup.mjs';
 
 const { version } = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -42,7 +42,9 @@ test('setup initializes a new configuration and repeat setup preserves user pref
   const initial = await setup({ claudeDir });
   assert.equal(initial.backupPath, null);
   assert.equal(JSON.parse(await fs.readFile(initial.configPath, 'utf8')).lang, 'auto');
-  const config = JSON.stringify({ glm: { showBalance: false }, lang: 'en' });
+  assert.deepEqual(JSON.parse(await fs.readFile(initial.configPath, 'utf8')).segments,
+    ['model', 'dir', 'git', 'ctx', 'auto']);
+  const config = JSON.stringify({ segments: ['glm'], glm: { showBalance: false }, lang: 'en' });
   await fs.writeFile(initial.configPath, config);
   const second = await setup({ claudeDir });
   assert.equal(second.backupPath, null);
@@ -52,6 +54,162 @@ test('setup initializes a new configuration and repeat setup preserves user pref
   });
   assert.match(demo, /wk/);
   assert.ok(!demo.includes('¥'));
+});
+
+test('installed runtime supports the new token, speed, DeepSeek and MiniMax segments', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  await fs.writeFile(result.configPath, JSON.stringify({ segments: ['tok', 'speed', 'deepseek', 'minimax'], lang: 'en' }));
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const demo = execFileSync(process.execPath, [script, '--demo'], {
+    encoding: 'utf8', env: { ...process.env, GLM_STATUSLINE_CONFIG: result.configPath },
+  }).replace(/\x1b\[[0-9;]*m/g, '').trim();
+  assert.match(demo, /^tok .* \| 150 tok\/s \| ¥97\.81 \| MiniMax 5h 62% · wk 88%$/);
+});
+
+test('installed MiniMax query and status line use settings credentials and selected region', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const settings = JSON.parse(await fs.readFile(result.settingsPath, 'utf8'));
+  settings.env = { MINIMAX_API_KEY: 'fixture-subscription-key' };
+  await fs.writeFile(result.settingsPath, JSON.stringify(settings));
+  await fs.writeFile(result.configPath, JSON.stringify({ segments: ['minimax'], lang: 'en',
+    minimax: { platform: 'en' }, cacheTtlSeconds: 0 }));
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const home = path.dirname(path.dirname(result.settingsPath));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(minimax_api_key|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
+  Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
+    GLM_STATUSLINE_CONFIG: result.configPath });
+  for (const args of [['--query'], []]) {
+    const code = `process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify(args)}];
+      globalThis.fetch = async (url, options) => {
+        if (url !== 'https://www.minimax.io/v1/token_plan/remains' ||
+            options.headers.Authorization !== 'Bearer fixture-subscription-key') throw new Error('wrong request');
+        return { ok: true, json: async () => ({ base_resp: { status_code: 0 }, model_remains: [{
+          model_name: 'general', current_interval_remaining_percent: 62, current_weekly_remaining_percent: 88,
+        }] }) };
+      };
+      await import(${JSON.stringify(pathToFileURL(script).href)});`;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', code],
+      { encoding: 'utf8', input: '{}', env, timeout: 10000 });
+    if (args.length) assert.equal(JSON.parse(output).five.usedPct, 38);
+    else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), 'MiniMax 5h 62% · wk 88%');
+  }
+});
+
+test('installed auto routes both query and rendering to the selected provider and region exactly once', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const home = path.dirname(path.dirname(result.settingsPath));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(glm_api_key|deepseek_api_key|minimax_api_key|anthropic_.*|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
+  Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
+    GLM_STATUSLINE_CONFIG: result.configPath });
+  for (const [base, provider, endpoint, body, expected] of [
+    ['https://open.bigmodel.cn/api/anthropic', 'glm', 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+      { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } }, '5h 62%'],
+    ['https://api.z.ai/api/anthropic', 'glm', 'https://api.z.ai/api/monitor/usage/quota/limit',
+      { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } }, '5h 62%'],
+    ['https://api.deepseek.com/anthropic', 'deepseek', 'https://api.deepseek.com/user/balance',
+      { balance_infos: [{ currency: 'CNY', total_balance: '97.81' }] }, '¥97.81'],
+    ['https://api.minimaxi.com/anthropic', 'minimax', 'https://www.minimaxi.com/v1/token_plan/remains',
+      { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
+    ['https://api.minimax.io/anthropic', 'minimax', 'https://www.minimax.io/v1/token_plan/remains',
+      { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
+  ]) {
+    await fs.writeFile(result.settingsPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'fixture-auto-key',
+    } }));
+    await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'auto', provider],
+      lang: 'en', glm: { showBalance: false }, cacheTtlSeconds: 0 }));
+    for (const args of [['--query'], []]) {
+      const code = `process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify(args)}];
+        let calls = 0;
+        globalThis.fetch = async (url, options) => {
+          calls++;
+          if (url !== ${JSON.stringify(endpoint)} || options.headers.Authorization !==
+              ${JSON.stringify(provider === 'glm' ? 'fixture-auto-key' : 'Bearer fixture-auto-key')}) {
+            throw new Error('wrong request');
+          }
+          return { ok: true, json: async () => (${JSON.stringify(body)}) };
+        };
+        await import(${JSON.stringify(pathToFileURL(script).href)});
+        process.on('beforeExit', () => { if (calls !== 1) process.exitCode = 2; });`;
+      const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
+        encoding: 'utf8', input: '{"model":{"display_name":"session"}}', env, timeout: 10000,
+      });
+      if (args.length) assert.equal(JSON.parse(output).ok, true);
+      else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), `session | ${expected}`);
+    }
+  }
+});
+
+test('providers run concurrently while rendering and query JSON preserve configured order', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const home = path.dirname(path.dirname(result.settingsPath));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(glm_api_key|deepseek_api_key|minimax_api_key|anthropic_.*|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
+  Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
+    GLM_STATUSLINE_CONFIG: result.configPath, GLM_API_KEY: 'fixture-concurrent-glm',
+    DEEPSEEK_API_KEY: 'fixture-concurrent-deepseek', MINIMAX_API_KEY: 'fixture-concurrent-minimax' });
+  await fs.writeFile(result.configPath, JSON.stringify({ segments: ['deepseek', 'glm', 'minimax'],
+    lang: 'en', glm: { showBalance: false }, cacheTtlSeconds: 0 }));
+  for (const args of [['--query'], []]) {
+    const code = `process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify(args)}];
+      const pending = [];
+      let completed = 0;
+      // No request can finish until all three have started. Serial execution fails without timing assertions.
+      globalThis.fetch = (url) => new Promise((resolve) => {
+        const body = url.includes('deepseek.com')
+          ? { balance_infos: [{ currency: 'CNY', total_balance: '42' }] }
+          : url.includes('minimaxi.com')
+            ? { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }
+            : { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } };
+        pending.push(() => { completed++; resolve({ ok: true, json: async () => body }); });
+        if (pending.length === 3) for (const finish of [...pending].reverse()) finish();
+      });
+      process.on('beforeExit', () => { if (completed !== 3) process.exitCode = 2; });
+      await import(${JSON.stringify(pathToFileURL(script).href)});`;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8', input: '{}', env, timeout: 10000,
+    });
+    if (args.length) {
+      const data = JSON.parse(output);
+      assert.deepEqual(Object.keys(data), ['deepseek', 'glm', 'minimax']);
+      assert.ok(Object.values(data).every((info) => info.ok));
+    } else assert.equal(output.replace(/\x1b\[[0-9;]*m/g, '').trim(), '¥42.00 | 5h 62% | MiniMax 5h 62%');
+  }
+});
+
+test('unknown auto URLs hide only the provider segment, never query, and explain failures on demand', async (t) => {
+  const result = await setup({ claudeDir: await temp(t) });
+  const script = path.join(result.installDir, 'statusline.mjs');
+  const home = path.dirname(path.dirname(result.settingsPath));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(anthropic_.*|glm_statusline_debug)$/i.test(name)));
+  Object.assign(env, { HOME: home, USERPROFILE: home, GLM_STATUSLINE_CONFIG: result.configPath });
+  await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'auto', 'ctx'] }));
+  for (const base of ['', 'not a URL', 'https://api.anthropic.com', 'https://proxy.example/secret',
+    'https://api.deepseek.com.evil.test']) {
+    await fs.writeFile(result.settingsPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'fixture-secret', GLM_API_KEY: 'dedicated-secret',
+    } }));
+    for (const mode of ['render', 'debug', 'query']) {
+      const code = `process.argv = [process.execPath, ${JSON.stringify(script)},
+          ...${JSON.stringify(mode === 'query' ? ['--query'] : [])}];
+        globalThis.fetch = () => { process.exit(99); };
+        await import(${JSON.stringify(pathToFileURL(script).href)});`;
+      const output = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+        encoding: 'utf8', input: '{"model":{"display_name":"session"}}', timeout: 10000,
+        env: { ...env, GLM_STATUSLINE_DEBUG: mode === 'debug' ? '1' : '' },
+      });
+      assert.equal(output.status, mode === 'query' ? 1 : 0, output.stderr);
+      assert.equal(output.stdout.replace(/\x1b\[[0-9;]*m/g, '').trim(), mode === 'query' ? '' : 'session | ctx --');
+      if (mode === 'render') assert.equal(output.stderr, '');
+      else assert.match(output.stderr, /ANTHROPIC_BASE_URL/);
+      assert.doesNotMatch(output.stderr, /secret/);
+    }
+  }
 });
 
 test('installed auto language follows locale on each invocation and keeps explicit user choices', async (t) => {

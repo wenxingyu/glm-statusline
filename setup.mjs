@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const RUNTIME_FILES = ['statusline.mjs', 'glm.mjs', 'proxy.mjs', 'setup.mjs', 'package.json', 'config.json', 'LICENSE'];
+const RUNTIME_FILES = ['statusline.mjs', 'glm.mjs', 'deepseek.mjs', 'minimax.mjs', 'tokens.mjs', 'cache.mjs',
+  'proxy.mjs', 'setup.mjs', 'package.json', 'config.json', 'LICENSE'];
 
 function shellQuote(value) {
   if (process.platform === 'win32') {

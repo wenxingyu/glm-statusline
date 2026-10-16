@@ -15,10 +15,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getGlmInfo, PLATFORM_BASE } from './glm.mjs';
+import { getGlmInfo } from './glm.mjs';
 import { proxyEnvironment } from './proxy.mjs';
+import { getDeepSeekInfo } from './deepseek.mjs';
+import { getMiniMaxInfo } from './minimax.mjs';
+import { tokenTotals, generationSpeed } from './tokens.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROVIDERS = ['glm', 'deepseek', 'minimax'];
 
 // ── 颜色 ────────────────────────────────────────────────────
 const C = {
@@ -33,10 +37,23 @@ const C = {
 };
 const paint = (s, color) => `${color}${s}${C.reset}`;
 
+export function shade(name, env = process.env) {
+  const background = String(env.COLORFGBG ?? '').split(';').at(-1);
+  const dark = /^\d+$/.test(background) && [0, 1, 2, 3, 4, 5, 6, 8].includes(Number(background));
+  if (!dark) return C[name];
+  const index = { blue: 75, magenta: 177, red: 203 }[name];
+  if (!index) return C[name];
+  if (/256color|direct/i.test(env.TERM ?? '') || /truecolor|24bit/i.test(env.COLORTERM ?? '')) {
+    return `\x1b[38;5;${index}m`;
+  }
+  return { blue: '\x1b[94m', magenta: '\x1b[95m', red: '\x1b[91m' }[name];
+}
+
 // ── 配置 ────────────────────────────────────────────────────
 const DEFAULTS = {
-  segments: ['model', 'dir', 'git', 'ctx', 'glm'], // 要显示的分段，按顺序
+  segments: ['model', 'dir', 'git', 'ctx', 'auto'], // 要显示的分段，按顺序
   lang: 'auto',                                     // auto | zh | en
+  minimax: { platform: 'auto', model: 'auto' },       // cn | en | auto; quota model name
   glm: {
     platform: 'auto',   // auto | cn | en（auto 时按 ANTHROPIC_BASE_URL 判断）
     showBalance: true,  // 是否显示按量付费账户余额（仅 cn 平台）
@@ -46,19 +63,25 @@ const DEFAULTS = {
   staleSeconds: 1800,     // 查询失败时过期缓存最长可用时间
   timeoutMs: 5000,        // 单次请求超时
   contextLimit: 0,        // 上下文窗口，0 = 优先使用 Claude Code 上报值
+  speedSamples: 5,        // 最近 1–20 次响应的加权平均速度
 };
 
 export function normalizeConfig(user) {
   if (!user || typeof user !== 'object' || Array.isArray(user)) user = {};
   const glm = user.glm ?? {};
+  const minimax = user.minimax ?? {};
   const number = (key, min = 0, max = Number.MAX_SAFE_INTEGER) =>
     Number.isFinite(user[key]) && user[key] >= min && user[key] <= max
       ? user[key] : DEFAULTS[key];
   return {
     segments: Array.isArray(user.segments)
-      ? [...new Set(user.segments.filter((s) => DEFAULTS.segments.includes(s)))]
+      ? [...new Set(user.segments.filter((s) => [...DEFAULTS.segments, 'tok', 'speed', ...PROVIDERS].includes(s)))]
       : [...DEFAULTS.segments],
     lang: ['auto', 'zh', 'en'].includes(user.lang) ? user.lang : DEFAULTS.lang,
+    minimax: {
+      platform: ['auto', 'cn', 'en'].includes(minimax.platform) ? minimax.platform : DEFAULTS.minimax.platform,
+      model: typeof minimax.model === 'string' && minimax.model.trim() ? minimax.model.trim() : DEFAULTS.minimax.model,
+    },
     glm: {
       platform: ['auto', 'cn', 'en'].includes(glm.platform) ? glm.platform : DEFAULTS.glm.platform,
       showBalance: typeof glm.showBalance === 'boolean' ? glm.showBalance : DEFAULTS.glm.showBalance,
@@ -68,6 +91,7 @@ export function normalizeConfig(user) {
     staleSeconds: number('staleSeconds'),
     timeoutMs: Math.floor(number('timeoutMs', 1, 2_147_483_647)),
     contextLimit: number('contextLimit'),
+    speedSamples: Math.floor(number('speedSamples', 1, 20)),
   };
 }
 
@@ -129,22 +153,67 @@ async function loadClaudeSettingsEnv() {
   }
 }
 
-function resolveKey(env) {
-  return (
-    process.env.GLM_API_KEY ||
-    env.ANTHROPIC_AUTH_TOKEN ||
-    env.ANTHROPIC_API_KEY ||
-    process.env.ANTHROPIC_AUTH_TOKEN ||
-    process.env.ANTHROPIC_API_KEY ||
-    null
-  );
+function resolveBaseUrl(env, current) {
+  // 与通用 Key 的来源优先级一致，避免识别、认证和区域选择使用不同的 URL。
+  const settingsKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
+  return String((settingsKey ? env.ANTHROPIC_BASE_URL : current.ANTHROPIC_BASE_URL) ??
+    env.ANTHROPIC_BASE_URL ?? current.ANTHROPIC_BASE_URL ?? '');
+}
+
+export function detectProvider(base) {
+  try {
+    const url = new URL(base);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const host = url.hostname.toLowerCase();
+    if (host === 'api.deepseek.com') return 'deepseek';
+    if (['minimaxi.com', 'minimax.io', 'minimax.chat'].some((domain) =>
+      host === domain || host.endsWith(`.${domain}`))) return 'minimax';
+    if (host === 'bigmodel.cn' || host.endsWith('.bigmodel.cn') ||
+      host === 'z.ai' || host.endsWith('.z.ai')) return 'glm';
+  } catch { /* 无法识别的代理地址需显式配置对应服务商 Key */ }
+  return null;
+}
+
+export function resolveSegments(config, env = {}, current = process.env) {
+  if (!config.segments.includes('auto')) return config.segments;
+  // demo 使用固定假数据，不依赖本机服务商配置。
+  const provider = config._demo ? 'glm' : detectProvider(resolveBaseUrl(env, current));
+  if (!provider && current.GLM_STATUSLINE_DEBUG) {
+    console.error('auto: ANTHROPIC_BASE_URL 缺失、无效或不支持，已跳过额度/余额查询。');
+  }
+  return [...new Set(config.segments.map((s) => s === 'auto' ? provider : s).filter(Boolean))];
+}
+
+export function resolveCredential(provider, env = {}, current = process.env) {
+  const dedicated = { glm: 'GLM_API_KEY', deepseek: 'DEEPSEEK_API_KEY', minimax: 'MINIMAX_API_KEY' }[provider];
+  const explicit = current[dedicated] || env[dedicated];
+  if (explicit) return { key: explicit, mismatch: false };
+  const key = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY ||
+    current.ANTHROPIC_AUTH_TOKEN || current.ANTHROPIC_API_KEY || null;
+  const base = resolveBaseUrl(env, current);
+  const detected = detectProvider(base);
+  // 无 base URL 时保留旧版 GLM 兼容；不猜测通用 sk- Key 属于哪家服务商。
+  const mismatch = Boolean(key && (detected ? detected !== provider : Boolean(base) || provider !== 'glm'));
+  return { key: mismatch ? null : key, mismatch };
 }
 
 function resolvePlatform(config, env) {
   if (config.glm.platform && config.glm.platform !== 'auto') return config.glm.platform;
-  const base = String(env.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL ?? '');
-  if (base.includes('z.ai')) return 'en';
+  try {
+    const host = new URL(resolveBaseUrl(env, process.env)).hostname;
+    if (host === 'z.ai' || host.endsWith('.z.ai')) return 'en';
+  } catch { /* 无有效 URL 时默认国内平台 */ }
   return 'cn'; // bigmodel.cn 及其他情况默认走国内版
+}
+
+export function resolveMiniMaxPlatform(config, env = {}, current = process.env) {
+  if (['cn', 'en'].includes(config.minimax?.platform)) return config.minimax.platform;
+  const base = resolveBaseUrl(env, current);
+  try {
+    const host = new URL(base).hostname;
+    if (host === 'minimax.io' || host.endsWith('.minimax.io')) return 'en';
+  } catch { /* 默认国内平台；专用 Key 可显式指定平台 */ }
+  return 'cn';
 }
 
 // ── 数据采集 ────────────────────────────────────────────────
@@ -287,7 +356,7 @@ function fmtCountdown(resetMs) {
 }
 
 // 剩余比例着色：<=15% 红，<=40% 黄，其余绿
-const remainColor = (remain) => (remain <= 15 ? C.red : remain <= 40 ? C.yellow : C.green);
+const remainColor = (remain) => (remain <= 15 ? shade('red') : remain <= 40 ? C.yellow : C.green);
 
 function quotaPart(label, entry) {
   if (!entry) return null;
@@ -314,11 +383,60 @@ export function renderGlm(info, config, platform) {
   }
   if (!chunks.length) {
     if (info.refreshing) return paint(t.refreshing, C.dim);
-    return paint(`${t.fail}: ${info.error || info.partialError || t.noData}`, C.red);
+    return paint(`${t.fail}: ${info.error || info.partialError || t.noData}`, shade('red'));
   }
   if (info.stale) chunks.push(paint(t.stale, C.yellow));
   else if (info.partialError) chunks.push(paint(t.partial, C.yellow));
   return chunks.join(paint(' · ', C.dim));
+}
+
+export function renderDeepSeek(info, config) {
+  const zh = resolveLanguage(config.lang) === 'zh';
+  if (!info.balances?.length) return paint(info.refreshing
+    ? (zh ? 'DeepSeek 刷新中' : 'DeepSeek refreshing')
+    : (zh ? 'DeepSeek 查询失败' : 'DeepSeek query failed'), info.refreshing ? C.dim : shade('red'));
+  const balances = info.balances.map(({ currency, balance }) => paint(
+    `${currency === 'CNY' ? '¥' : '$'}${balance.toFixed(2)}`, balance <= 0 ? shade('red') : C.green));
+  if (info.stale) balances.push(paint(zh ? '缓存' : 'cached', C.yellow));
+  return balances.join(paint(' · ', C.dim));
+}
+
+export function renderMiniMax(info, config) {
+  const zh = resolveLanguage(config.lang) === 'zh';
+  const parts = [quotaPart('5h', info.five), quotaPart(zh ? '周' : 'wk', info.weekly)].filter(Boolean);
+  if (!parts.length) return paint(info.refreshing
+    ? (zh ? 'MiniMax 刷新中' : 'MiniMax refreshing')
+    : (zh ? 'MiniMax 查询失败' : 'MiniMax query failed'), info.refreshing ? C.dim : shade('red'));
+  if (info.stale) parts.push(paint(zh ? '缓存' : 'cached', C.yellow));
+  return paint('MiniMax ', C.cyan) + parts.join(paint(' · ', C.dim));
+}
+
+const fmtTokens = (n) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
+  : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+function credentialMessage(provider, credential, lang) {
+  const name = { glm: 'GLM', deepseek: 'DeepSeek', minimax: 'MiniMax' }[provider];
+  return credential.mismatch
+    ? `${name} ${lang === 'zh' ? 'Key 服务商不匹配' : 'key provider mismatch'}`
+    : `${name} ${lang === 'zh' ? '未配置 Key' : 'no key'}`;
+}
+
+function queryProvider(provider, config, env, key, force = false) {
+  const options = { key, ttlSec: config.cacheTtlSeconds, staleSec: config.staleSeconds,
+    timeoutMs: config.timeoutMs, proxyEnv: proxyEnvironment(env), force };
+  if (provider === 'glm') return getGlmInfo({ ...options,
+    platform: resolvePlatform(config, env), showBalance: config.glm.showBalance });
+  if (provider === 'minimax') return getMiniMaxInfo({ ...options,
+    platform: resolveMiniMaxPlatform(config, env), model: config.minimax.model });
+  return getDeepSeekInfo(options);
+}
+
+function demoInfo(provider) {
+  if (provider === 'deepseek') return { balances: [{ currency: 'CNY', balance: 97.81 }] };
+  if (provider === 'minimax') return { five: { usedPct: 38 }, weekly: { usedPct: 12 } };
+  const now = Date.now();
+  return { level: 'pro', five: { usedPct: 38, resetMs: now + 132 * 60000 },
+    weekly: { usedPct: 12, resetMs: now + 82 * 3600000 }, balance: 46.2 };
 }
 
 export async function render(input, config) {
@@ -326,12 +444,18 @@ export async function render(input, config) {
   config = { ...config, lang: resolveLanguage(config.lang) };
   const t = L[config.lang];
   const cwd = input.workspace?.current_dir || input.cwd || process.cwd();
-  const env = config.segments.includes('glm') && !config._demo ? await loadClaudeSettingsEnv() : {};
-  const key = resolveKey(env);
+  const env = config.segments.some((s) => s === 'auto' || PROVIDERS.includes(s)) && !config._demo
+    ? await loadClaudeSettingsEnv() : {};
+  config = { ...config, segments: resolveSegments(config, env) };
   const platform = resolvePlatform(config, env);
   const parts = {};
+  const totalsPromise = config.segments.some((s) => ['tok', 'speed'].includes(s))
+    ? (config._demo ? { total: 11_900_000, input: 104700, output: 94500,
+      cacheRead: 11_700_000, cacheCreation: 800, samples: [{ tokens: 1500, ms: 10000 }] }
+      : tokenTotals(input.transcript_path)) : null;
 
-  for (const seg of config.segments) {
+  // 各分段的 I/O 独立进行，最终仍按配置顺序输出；tok/speed 共用一次扫描。
+  await Promise.all(config.segments.map(async (seg) => {
     switch (seg) {
       case 'model': {
         const name = input.model?.display_name || input.model?.id || '';
@@ -339,12 +463,12 @@ export async function render(input, config) {
         break;
       }
       case 'dir': {
-        parts.dir = paint(path.basename(cwd) || cwd, C.blue);
+        parts.dir = paint(path.basename(cwd) || cwd, shade('blue'));
         break;
       }
       case 'git': {
         const branch = await gitBranch(cwd);
-        if (branch) parts.git = paint(branch, C.magenta);
+        if (branch) parts.git = paint(branch, shade('magenta'));
         break;
       }
       case 'ctx': {
@@ -353,38 +477,37 @@ export async function render(input, config) {
           const pct = Math.min(100, Math.round(usage.usedPct));
           // ctx 显示剩余百分比，但按已用比例着色（用得越多越红）
           parts.ctx = paint(`${t.ctx} ${usage.estimated ? '~' : ''}${100 - pct}%`,
-            pct >= 85 ? C.red : pct >= 60 ? C.yellow : C.green);
+            pct >= 85 ? shade('red') : pct >= 60 ? C.yellow : C.green);
         } else parts.ctx = paint(`${t.ctx} --`, C.dim);
         break;
       }
+      case 'tok': {
+        const totals = await totalsPromise;
+        parts.tok = totals ? paint(`tok ${totals.partial ? '~' : ''}${fmtTokens(totals.total)} ` +
+          `↑${fmtTokens(totals.input)} ↓${fmtTokens(totals.output)} ` +
+          `⚡${fmtTokens(totals.cacheRead + totals.cacheCreation)}`, C.cyan) : paint('tok --', C.dim);
+        break;
+      }
+      case 'speed': {
+        const totals = await totalsPromise;
+        const speed = generationSpeed(totals?.samples, config.speedSamples);
+        parts.speed = speed === null ? paint('-- tok/s', C.dim) : paint(`${Math.round(speed)} tok/s`, C.cyan);
+        break;
+      }
+      case 'minimax':
+      case 'deepseek':
       case 'glm': {
-        if (config._demo) {
-          // 假数据预览，无网络请求
-          const now = Date.now();
-          parts.glm = renderGlm({ level: 'pro',
-            five: { usedPct: 38, resetMs: now + 132 * 60000 },
-            weekly: { usedPct: 12, resetMs: now + 82 * 3600000 }, balance: 46.2,
-          }, config, platform);
+        const credential = config._demo ? null : resolveCredential(seg, env);
+        if (credential && !credential.key) {
+          parts[seg] = paint(credentialMessage(seg, credential, config.lang), C.yellow);
           break;
         }
-        if (!key) {
-          parts.glm = paint(t.noKey, C.yellow);
-          break;
-        }
-        const info = await getGlmInfo({
-          key,
-          platform,
-          showBalance: config.glm.showBalance,
-          ttlSec: config.cacheTtlSeconds,
-          staleSec: config.staleSeconds,
-          timeoutMs: config.timeoutMs,
-          proxyEnv: proxyEnvironment(env),
-        });
-        parts.glm = renderGlm(info, config, platform);
+        const info = config._demo ? demoInfo(seg) : await queryProvider(seg, config, env, credential.key);
+        parts[seg] = { glm: renderGlm, deepseek: renderDeepSeek, minimax: renderMiniMax }[seg](info, config, platform);
         break;
       }
     }
-  }
+  }));
 
   return config.segments.map((s) => parts[s]).filter(Boolean).join(paint(' | ', C.dim));
 }
@@ -393,13 +516,13 @@ export async function render(input, config) {
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`glm-statusline — Claude Code 的 GLM 额度状态栏
+    console.log(`glm-statusline — Claude Code 的额度、余额与会话用量状态栏
 
 用法：glm-statusline [选项]
 
   --setup       安装运行文件并配置 Claude Code（已有设置自动备份）
   --demo        使用假数据预览，不请求接口
-  --query       强制查询并输出 JSON
+  --query       强制查询配置中 auto / glm / deepseek / minimax 段并输出 JSON
   --version     显示版本
   --help        显示帮助
 
@@ -438,24 +561,20 @@ async function main() {
 
   if (process.argv.includes('--query')) {
     const env = await loadClaudeSettingsEnv();
-    const key = resolveKey(env);
-    if (!key) {
-      console.error('未找到 API Key（检查 GLM_API_KEY 或 ~/.claude/settings.json 的 env.ANTHROPIC_AUTH_TOKEN）');
-      process.exit(1);
-    }
-    const platform = resolvePlatform(config, env);
-    console.error(`平台: ${platform} (${PLATFORM_BASE[platform]})  Key: ${key.slice(0, 6)}***`);
-    const info = await getGlmInfo({
-      key,
-      platform,
-      showBalance: config.glm.showBalance,
-      ttlSec: 0, // 强制刷新
-      staleSec: config.staleSeconds,
-      timeoutMs: config.timeoutMs,
-      proxyEnv: proxyEnvironment(env),
-      force: true,
-    });
-    console.log(JSON.stringify(info, null, 2));
+    const providers = resolveSegments(config, env).filter((s) => PROVIDERS.includes(s));
+    if (!providers.length) throw new Error(config.segments.includes('auto')
+      ? 'auto 无法识别 ANTHROPIC_BASE_URL；请配置支持的接口地址，或手动指定服务商分段及其专用 Key'
+      : '请在 segments 中配置 auto、glm、deepseek 或 minimax');
+    const entries = await Promise.all(providers.map(async (provider) => {
+      const credential = resolveCredential(provider, env);
+      if (!credential.key) {
+        process.exitCode = 1;
+        return [provider, { ok: false, error: credentialMessage(provider, credential, resolveLanguage(config.lang)) }];
+      }
+      return [provider, await queryProvider(provider, { ...config, cacheTtlSeconds: 0 }, env, credential.key, true)];
+    }));
+    const results = Object.fromEntries(entries);
+    console.log(JSON.stringify(providers.length === 1 ? results[providers[0]] : results, null, 2));
     return;
   }
 

@@ -1,6 +1,6 @@
 # glm-statusline
 
-Claude Code 底部状态栏插件：实时显示智谱 GLM 剩余额度（Coding Plan 套餐 + 按量付费余额）。
+Claude Code 底部状态栏插件：显示智谱 GLM / MiniMax 额度、DeepSeek 余额、会话累计 token 和估算生成速度。
 
 支持 Windows、Linux 和 macOS；纯 Node.js 实现，无原生扩展。
 
@@ -17,10 +17,23 @@ GLM-4.6 | glm-statusline | main | ctx 87% | PRO 5h 62% (2h12m) · 周 88% (3d4h)
 - 同一账号并发刷新时只发起一组请求，其他调用显示有效缓存或「GLM 刷新中」
 - 查询失败时，有效期内的旧数据标记「缓存」；超过兜底期限后停止显示
 
+可选的新分段示例（配置见下方）：
+
+```text
+deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k ⚡11.7M | 150 tok/s | ¥97.81
+```
+
+- `tok`：整个主会话的累计用量，`↑` 为输入，`↓` 为输出，`⚡` 为缓存读取与创建之和。
+- `speed`：最近 5 次响应的估算生成速度，可用 `speedSamples` 调整到 1–20。
+- `deepseek`：DeepSeek 可用余额，支持人民币和美元；断网时可显示带「缓存」标记的旧余额。
+- `minimax`：MiniMax Token Plan 的 5 小时及每周剩余额度，支持国内与国际平台。
+- 深色终端按 `COLORFGBG` 的背景色选择亮色；支持 256 色时使用更清晰的蓝、紫、红色。
+
 ## 版本更新
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.8** · 2026-10-16 | 自动识别 GLM / DeepSeek / MiniMax，新增会话 token 和估算速度，多服务商并发查询 | 使用多家服务商或关注会话用量的用户；已有配置需将服务商分段改为 `auto` |
 | **1.0.7** · 2026-10-14 | 新安装默认自动选择中英文标签和状态提示，可固定为中文或英文 | 希望跟随系统语言的用户；已有配置需将 `lang` 改为 `auto` |
 | **1.0.6** · 2026-10-14 | 补齐历史更新日志，npm 首页展示版本摘要，发布后自动生成 GitHub Release | 文档与发布流程更新；状态栏功能与 1.0.5 相同，已有 1.0.5 用户可按需升级 |
 | **1.0.5** · 2026-10-14 | 修复 Windows 无 Git Bash 时 PowerShell 无法启动状态栏；支持带空格路径 | Windows 状态栏不显示的用户，升级后必须重新运行 `--setup` |
@@ -90,8 +103,8 @@ cd glm-statusline
 node statusline.mjs --setup
 ```
 
-重启 Claude Code（或开新会话）即可生效。API Key 自动读取 `~/.claude/settings.json` 的
-`env.ANTHROPIC_AUTH_TOKEN`（即你连 GLM 用的那个 Key），也可以用环境变量 `GLM_API_KEY` 覆盖。
+重启 Claude Code（或开新会话）即可生效。默认根据 `ANTHROPIC_BASE_URL` 自动识别
+GLM、DeepSeek 或 MiniMax，复用对应的 Claude Code API Key，也支持各家的专用 Key。
 
 ### Windows 状态栏不显示
 
@@ -124,7 +137,7 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `segments` | `["model","dir","git","ctx","glm"]` | 显示的分段及顺序：模型 / 目录 / git 分支 / 上下文剩余 / GLM 额度 |
+| `segments` | `["model","dir","git","ctx","auto"]` | 分段及顺序；`auto` 按接口域名自动选择服务商；另支持 `glm`、`deepseek`、`minimax` 固定服务商，以及 `tok` 会话用量、`speed` 生成速度 |
 | `lang` | `auto` | 自动选择标签和状态提示语言；`zh` 固定中文（周），`en` 固定英文（wk） |
 | `glm.platform` | `auto` | `cn`（open.bigmodel.cn）/ `en`（api.z.ai）/ `auto`（按 `ANTHROPIC_BASE_URL` 判断） |
 | `glm.showBalance` | `true` | 是否查询并显示按量付费余额 |
@@ -133,6 +146,112 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | `staleSeconds` | `1800` | 查询失败时，旧数据距最后成功查询的最大秒数；`0` 禁用失败兜底 |
 | `timeoutMs` | `5000` | 单次请求超时 |
 | `contextLimit` | `0` | 上下文窗口大小，`0` = 优先使用 Claude Code 上报值，缺失时按模型自动（200k / 1M） |
+| `speedSamples` | `5` | 速度使用的最近响应数，范围 1–20，取整数 |
+| `minimax.platform` | `auto` | `cn` 国内 / `en` 国际 / `auto` 按 `ANTHROPIC_BASE_URL` 识别，未识别时使用国内平台 |
+| `minimax.model` | `auto` | 额度池名称；自动优先选择 `general`，仅有一项时选该项；多项且无 `general` 时需显式填写接口的 `model_name` |
+
+### 自动识别服务商（默认）
+
+```json
+{
+  "segments": ["model", "dir", "git", "ctx", "auto"]
+}
+```
+
+`auto` 每次运行根据 `ANTHROPIC_BASE_URL` 的主机名选择额度或余额分段：
+
+| 接口主机名 | 自动显示 |
+|---|---|
+| `bigmodel.cn`、`z.ai` 及其子域 | GLM 额度及可选余额 |
+| `api.deepseek.com` | DeepSeek 余额 |
+| `minimaxi.com`、`minimax.io`、`minimax.chat` 及其子域 | MiniMax 额度 |
+
+识别、通用 Key 和国内/国际平台选择使用同一来源规则：Claude `settings.json` 的
+`env` 中存在通用 Key 时优先使用该来源的 URL，否则优先使用进程环境的 URL；
+该来源未设置 URL 时再读取另一来源。专用 Key 仍按进程环境优先读取。
+
+**URL 缺失、无效或不属于这三家时，自动隐藏该分段，不发起额度/余额请求**，
+其他分段照常显示。不会根据模型名称、Key 字符串或已有专用 Key 猜测服务商。
+设置 `GLM_STATUSLINE_DEBUG=1` 可在 stderr 查看跳过原因；手动运行 `--query`
+且没有可查询的服务商时，会给出原因并以非零状态退出。
+
+使用自定义网关时，可手动配置 `glm`、`deepseek` 或 `minimax` 分段及对应专用 Key，
+查询仍使用该服务商的官方接口。`auto` 可与手动分段并用，解析后相同服务商只保留首次出现的位置，
+只查询和显示一次。`--demo` 中的 `auto` 固定展示 GLM 假数据。
+
+新安装默认启用 `auto`。升级保留已有配置；老用户更新运行文件后，将 `segments` 中
+固定的服务商分段（例如 `glm`）替换为 `auto` 即可启用自动识别。
+
+### MiniMax
+
+在用户配置中添加 `minimax` 段：
+
+```json
+{
+  "segments": ["model", "dir", "ctx", "tok", "speed", "minimax"],
+  "minimax": { "platform": "auto", "model": "auto" },
+  "speedSamples": 5
+}
+```
+
+显示示例：`MiniMax 5h 62% (2h12m) · 周 88% (3d4h)`。
+将 Token Plan 的订阅 Key 放入进程环境或 Claude `settings.json` 的
+`env.MINIMAX_API_KEY`（进程环境优先）。也可复用现有 `ANTHROPIC_AUTH_TOKEN` /
+`ANTHROPIC_API_KEY`，其 `ANTHROPIC_BASE_URL` 必须是 MiniMax 域名：
+`minimaxi.com` / `minimax.io` / 旧 `minimax.chat` 及其子域；其他服务商的 Key 会提示不匹配。
+国际平台 URL（例如 `https://api.minimax.io/anthropic`）自动选择 `en`，
+国内 URL（例如 `https://api.minimaxi.com/anthropic`）选择 `cn`。
+仅设置专用 Key 而没有 MiniMax base URL 时，国际账号请显式配置 `"platform": "en"`。
+
+本段查询 [MiniMax 官方 Token Plan 额度接口](https://platform.minimaxi.com/subscribe/coding-plan)，
+显示套餐剩余比例与重置倒计时，不包含按量付费账户的现金余额。
+优先使用 `general` 额度池，不将多个模型的共享额度相加。剩余比例读取
+`current_interval_remaining_percent` / `current_weekly_remaining_percent`；
+只有计数字段、缺少有效百分比时提示查询失败，避免误读不同接口的 `usage_count` 语义。
+响应字段参考[官方仓库中的原始响应报告](https://github.com/MiniMax-AI/MiniMax-M2.7/issues/48)，
+未使用真实账号验证本地接入。`remains_time` 仅用于重置倒计时，不作为额度比例。
+缓存、重试间隔、超时及代理复用现有配置，缓存按平台、账号和额度池分别隔离。
+可同时启用 `glm`、`deepseek`、`minimax`，分别配置各自专用 Key。
+
+### DeepSeek、会话用量与生成速度
+
+在用户配置中启用所需分段，例如：
+
+```json
+{
+  "segments": ["model", "dir", "ctx", "tok", "speed", "deepseek"],
+  "lang": "auto",
+  "speedSamples": 5
+}
+```
+
+`glm` 始终查询智谱，`deepseek` 始终查询 DeepSeek。各自优先读取进程环境或
+Claude settings.env 中的 `GLM_API_KEY` / `DEEPSEEK_API_KEY`，进程环境优先。
+也可复用 Claude 的 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`：根据对应
+`ANTHROPIC_BASE_URL` 的主机名判定服务商（DeepSeek 为 `api.deepseek.com`，
+智谱为 `bigmodel.cn` / `z.ai` 及其子域）。服务商不匹配会直接提示，跳过请求。
+自定义网关无法识别服务商时，请显式设置对应的专用 Key；仅凭 Key 字符串无法可靠识别服务商。
+未设置 base URL 时沿用旧版 GLM Key 读取方式。两个服务商可以同时显示，各用自己的专用 Key。
+`--query` 查询配置中启用的服务商（包括 `auto` 识别结果）；只有一项时直接返回该项 JSON，多项时按段名返回对象。
+
+会话用量从 stdin 的 `transcript_path` 读取 JSONL，忽略子代理记录，同一 `message.id`
+只累计一次；后续 usage 增长只补差额。缺少 message ID 时使用记录 UUID 去重。
+总量包含输入、输出、缓存读取与缓存创建，不是当前上下文大小，`/compact` 不清零。
+缺少 transcript 或有效用量时显示 `tok --`。不包含其他 transcript 文件中的用量。
+
+首次扫描按字节增量读取，单次最多 32 MiB，每约 1 MiB 保存断点；下次调用继续。
+扫描未完成时总量前标 `~`，未以换行结束的记录等待写完再计入。超过 8 MiB 的单行会跳过。
+缓存保存偏移、累计值、响应 ID 哈希及最近 20 个速度样本，不保存消息内容；
+写入使用原子替换和进程锁，支持文件截断、替换及损坏缓存后的重建。
+
+速度样本使用“响应首条记录时间 − 此前主会话最大时间戳”估算耗时，
+展示最近 `speedSamples` 个有效样本的总输出 token / 总秒数，避免直接平均单次速度。
+该时间间隔可能包含网络、工具等待或用户停顿，属于估算吞吐量，不能视为精确的模型解码速度。
+没有可靠时间戳或有效输出时显示 `-- tok/s`。只启用 `tok` / `speed` 中任意一项时才扫描累计用量。
+
+深色背景由 `COLORFGBG` 最后一项识别；256 色能力由 `TERM` / `COLORTERM` 判断。
+深色终端分别使用蓝 75、紫 177、红 203；无 256 色时退回亮色 16 色，浅色或未知背景使用原标准色。
+未设置 `COLORFGBG` 的终端不会自动推断深浅，可在终端环境中设置（例如深色为 `15;0`）。
 
 `lang: "auto"` 优先读取运行环境中有效的 `LC_ALL`、`LC_MESSAGES`、`LANG`，
 没有有效值时使用 Node.js `Intl` 提供的系统默认区域语言。中文区域（包括简体、繁体）使用中文，
@@ -218,6 +337,19 @@ Unix 还验证符号链接入口与特殊字符路径；macOS 额外验证 Zsh�
 Windows PowerShell，检测到 PowerShell 7 或 Git Bash 时也会验证。
 查看 [跨平台测试结果](https://github.com/wenxingyu/glm-statusline/actions/workflows/test.yml)。
 
+### 性能检查
+
+源码目录运行 `node scripts/benchmark.mjs`，可离线测量 Node 启动、仅显示模型的完整 CLI 启动、
+三家模拟接口并发查询，以及 1 千 / 1 万 / 5 万条合成响应的 token 扫描与缓存读取。
+脚本使用独立临时目录和模拟 Key，不访问真实账户或网络；耗时受系统、磁盘、Node 版本影响。
+
+状态栏各分段独立执行 I/O，多个服务商并发查询，输出仍按 `segments` 顺序；
+`tok` 和 `speed` 共用一次会话扫描。缓存失效时仍会等待接口结果，慢接口可能等待到 `timeoutMs`。
+`auto` 只选择一家服务商，因此多服务商并发主要改善手动启用多家时的刷新速度。
+
+会话记录按偏移增量扫描，但响应去重表仍完整保存在 JSON 缓存中，每次调用都要读取和校验；
+长会话会增加缓存解析、内存和写入成本。未启用 `tok` / `speed` 时不产生这部分开销。
+
 ## 自动发布到 npm
 
 `.github/workflows/publish.yml` 在推送 `v*` tag（例如 `v1.0.6`）时运行。
@@ -261,6 +393,12 @@ git push origin main --follow-tags
 |---|---|---|
 | 套餐额度 | `GET {base}/api/monitor/usage/quota/limit` | `Authorization: <key>`（无 Bearer 前缀） |
 | 账户余额 | `GET https://bigmodel.cn/api/biz/account/query-customer-account-report` | `Authorization: Bearer <key>` |
+| DeepSeek 余额 | `GET https://api.deepseek.com/user/balance` | `Authorization: Bearer <key>` |
+| MiniMax Token Plan | `GET https://www.minimaxi.com/v1/token_plan/remains`（国内）或 `https://www.minimax.io/v1/token_plan/remains`（国际） | `Authorization: Bearer <订阅 Key>` |
+
+DeepSeek 接口字段参照[官方余额文档](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)，
+读取各币种的 `total_balance`，不跨币种相加。缓存按服务商和 Key 哈希隔离，并复用同一套代理设置。
+会话扫描缓存位于系统临时目录 `glm-statusline-tokens-v1/`，余额缓存位于 `glm-statusline-v2/`。
 
 - `{base}`：国内版 `https://open.bigmodel.cn`，国际版 `https://api.z.ai`
 - 接口为智谱未公开文档的内部接口，参考 [cc-switch](https://github.com/farion1231/cc-switch) 与

@@ -12,6 +12,19 @@ npx --yes @wenxingyu/glm-statusline@latest --setup
 Windows PowerShell 可使用 `npx.cmd`。完成后重启 Claude Code 或开启新会话。
 已有用户配置会保留，替换状态栏命令前会备份原设置。
 
+## 1.0.8 - 2026-10-16
+
+- 状态栏各分段及 `--query` 的多服务商查询并发执行，保留配置顺序；DeepSeek / MiniMax 共用缓存流程并兼容原缓存格式。新增离线性能测量脚本。
+- 新增默认 `auto` 段：按 `ANTHROPIC_BASE_URL` 主机名自动选择 GLM、DeepSeek 或 MiniMax；未识别时隐藏该段且不请求，支持 `--query` 和与手动分段去重。
+- 新增可选 `minimax` 段：MiniMax Token Plan 的 5 小时 / 每周剩余额度，支持国内与国际平台、专用 Key、缓存兜底和 `--query`。
+- 新增可选 `tok` 段：主会话累计 token，按响应去重、增量读取并保存断点。
+- 新增可选 `speed` 段：按 transcript 时间戳估算速度，最近 5 次响应加权平均，支持 `speedSamples`。
+- 新增可选 `deepseek` 段：查询官方余额，支持缓存兜底与服务商 Key 错配提示。
+- 深色终端的目录、分支与告警色自适应 256 色或亮色 16 色。
+- 安装器与 npm 包包含全部新增模块，新安装默认使用 `auto` 分段，已有用户配置保留。
+
+**升级提示：** 重新运行 `--setup` 更新运行文件；已有配置会保留。将用户配置 `segments` 中固定的服务商分段替换为 `auto`，即可按接口地址自动识别；未知网关可保留手动分段并配置专用 Key。按需添加 `tok`、`speed`、`deepseek` 或 `minimax`。
+
 ## 1.0.7 - 2026-10-14
 
 ### 新增

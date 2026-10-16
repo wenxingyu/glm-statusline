@@ -1,6 +1,7 @@
 {
-  "segments": ["model", "dir", "git", "ctx", "glm"],
+  "segments": ["model", "dir", "git", "ctx", "auto"],
   "lang": "auto",
+  "minimax": { "platform": "auto", "model": "auto" },
   "glm": {
     "platform": "auto",
     "showBalance": true,
@@ -9,5 +10,6 @@
   "cacheTtlSeconds": 60,
   "staleSeconds": 1800,
   "timeoutMs": 5000,
-  "contextLimit": 0
+  "contextLimit": 0,
+  "speedSamples": 5
 }
