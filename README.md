@@ -1,6 +1,6 @@
 # glm-statusline
 
-![npm downloads](https://img.shields.io/npm/dw/@wenxingyu/glm-statusline)
+[![npm version](https://img.shields.io/npm/v/@wenxingyu/glm-statusline?logo=npm)](https://www.npmjs.com/package/@wenxingyu/glm-statusline) [![npm downloads](https://img.shields.io/npm/dw/@wenxingyu/glm-statusline)](https://www.npmjs.com/package/@wenxingyu/glm-statusline) [![Node.js version](https://img.shields.io/node/v/@wenxingyu/glm-statusline?logo=nodedotjs)](https://nodejs.org/) [![License: MIT](https://img.shields.io/npm/l/@wenxingyu/glm-statusline)](LICENSE)
 
 Claude Code 底部状态栏插件：显示智谱 GLM / MiniMax 额度、DeepSeek 余额、会话累计 token 和估算生成速度。
 
