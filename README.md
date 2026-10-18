@@ -1,5 +1,7 @@
 # glm-statusline
 
+![npm downloads](https://img.shields.io/npm/dw/@wenxingyu/glm-statusline)
+
 Claude Code 底部状态栏插件：显示智谱 GLM / MiniMax 额度、DeepSeek 余额、会话累计 token 和估算生成速度。
 
 支持 Windows、Linux 和 macOS；纯 Node.js 实现，无原生扩展。
