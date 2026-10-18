@@ -2,6 +2,14 @@
   "name": "@wenxingyu/glm-statusline",
   "version": "1.0.9",
   "description": "Claude Code status line with automatic GLM, DeepSeek and MiniMax detection, quota, balance and session usage",
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "glm",
+    "deepseek",
+    "minimax",
+    "token-usage"
+  ],
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
