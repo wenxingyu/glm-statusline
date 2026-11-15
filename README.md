@@ -35,6 +35,7 @@ deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k �
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.10** · 2026-11-15 | 修复 Claude Code `--settings` 切换 DeepSeek 和 GLM 时的状态栏查询 Key 冲突 | 通过 `--settings` 切换服务商或国内外平台的用户 |
 | **1.0.9** · 2026-10-16 | 默认显示 token 和速度；首次升级备份并重置配置；修复 MiniMax 国内域名识别，统一精简显示 | 所有用户；升级需运行 `--setup`，原状态栏自定义配置会先备份再重置 |
 | **1.0.8** · 2026-10-16 | 自动识别 GLM / DeepSeek / MiniMax，新增会话 token 和估算速度，多服务商并发查询 | 使用多家服务商或关注会话用量的用户；已有配置需将服务商分段改为 `auto` |
 | **1.0.7** · 2026-10-14 | 新安装默认自动选择中英文标签和状态提示，可固定为中文或英文 | 希望跟随系统语言的用户；已有配置需将 `lang` 改为 `auto` |
@@ -180,9 +181,9 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | `api.deepseek.com` | DeepSeek 余额 |
 | `minimaxi.com`、`minimax.cn`、`minimax.io`、`minimax.chat` 及其子域 | MiniMax 额度 |
 
-识别、通用 Key 和国内/国际平台选择使用同一来源规则：Claude `settings.json` 的
-`env` 中存在通用 Key 时优先使用该来源的 URL，否则优先使用进程环境的 URL；
-该来源未设置 URL 时再读取另一来源。专用 Key 仍按进程环境优先读取。
+服务商及国内/国际平台优先使用当前会话的 `ANTHROPIC_BASE_URL`，缺失时读取全局
+`settings.json`。复用的通用 Key 优先取当前会话的值，全局通用 Key 仅用于同一服务商和平台。
+各服务商的专用 Key 仍优先用于该服务商的额度或余额查询。
 
 **URL 缺失、无效或不属于这三家时，自动隐藏该分段，不发起额度/余额请求**，
 其他分段照常显示。不会根据模型名称、Key 字符串或已有专用 Key 猜测服务商。
@@ -192,6 +193,20 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 使用自定义网关时，可手动配置 `glm`、`deepseek` 或 `minimax` 分段及对应专用 Key，
 查询仍使用该服务商的官方接口。`auto` 可与手动分段并用，解析后相同服务商只保留首次出现的位置，
 只查询和显示一次。`--demo` 中的 `auto` 固定展示 GLM 假数据。
+
+### 用 Claude Code `--settings` 切换服务商
+
+在每个服务商的 JSON 文件中，将对应的 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`
+（或 `ANTHROPIC_API_KEY`）一起放进 `env`，再启动各自的会话。
+
+```bash
+claude --settings ./deepseek.json
+claude --settings ./glm.json
+```
+
+默认的 `auto` 分段会随会话切换，两个会话可以同时查询各自的额度或余额。
+各文件使用同一种认证变量名可避免 Claude Code 同时检测到两种通用 Key 的提示。
+在终端独立运行 `glm-statusline --query` 时，查询使用该进程的环境和全局设置。
 
 新安装默认启用 `tok`、`speed` 和 `auto`；不需要会话用量或速度时，可移除对应分段。
 本次升级运行 `--setup` 时会备份并替换旧状态栏配置，自动启用上述默认显示；

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { normalizeConfig, resolveLanguage, gitBranch, renderGlm, render, shade,
-  resolveCredential, renderDeepSeek, detectProvider, resolveSegments } from '../statusline.mjs';
+  resolveCredential, renderDeepSeek, detectProvider, resolveMiniMaxPlatform, resolveSegments } from '../statusline.mjs';
 
 test('invalid config fields fall back individually and segment order is preserved', () => {
   const defaults = normalizeConfig(null);
@@ -241,6 +241,40 @@ test('credentials are routed by provider with independent explicit overrides', (
   }
 });
 
+test('session credentials override global Claude settings in both provider directions', () => {
+  const glm = { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: 'glm-key' };
+  const deepseek = { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_API_KEY: 'deepseek-key' };
+  for (const [settings, profile, inactive, active, key] of [
+    [glm, deepseek, 'glm', 'deepseek', deepseek.ANTHROPIC_API_KEY],
+    [deepseek, glm, 'deepseek', 'glm', glm.ANTHROPIC_AUTH_TOKEN],
+  ]) {
+    const current = { ...settings, ...profile };
+    assert.deepEqual(resolveSegments(normalizeConfig({ segments: ['auto'] }), settings, current), [active]);
+    assert.deepEqual(resolveCredential(active, settings, current), { key, mismatch: false });
+    assert.deepEqual(resolveCredential(inactive, settings, current), { key: null, mismatch: true });
+  }
+  assert.equal(resolveCredential('glm', glm, { ...glm, ANTHROPIC_AUTH_TOKEN: 'other-account' }).key, 'other-account');
+  assert.equal(resolveCredential('glm', glm, { ...glm, GLM_API_KEY: 'dedicated' }).key, 'dedicated');
+  assert.equal(resolveCredential('glm', glm, {}).key, 'glm-key');
+});
+
+test('changing the session URL does not reuse a global key from another provider or region', () => {
+  const settings = { ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic', ANTHROPIC_AUTH_TOKEN: 'glm-cn-key' };
+  for (const [provider, base] of [
+    ['glm', 'https://api.z.ai/api/anthropic'],
+    ['deepseek', 'https://api.deepseek.com/anthropic'],
+  ]) {
+    for (const env of [{}, settings]) {
+      const current = { ...env, ANTHROPIC_BASE_URL: base };
+      assert.deepEqual(resolveCredential(provider, settings, current), { key: null, mismatch: true });
+    }
+  }
+  assert.equal(resolveCredential('glm', settings,
+    { ANTHROPIC_BASE_URL: 'https://open.bigmodel.cn/api/anthropic/' }).key, 'glm-cn-key');
+  assert.equal(resolveCredential('glm', settings, { ...settings, ANTHROPIC_AUTH_TOKEN: '' }).key, null);
+  assert.equal(resolveMiniMaxPlatform(normalizeConfig({}), settings, { ANTHROPIC_BASE_URL: 'https://api.minimax.io' }), 'en');
+});
+
 test('auto recognizes supported URL hosts without trusting paths, lookalikes or key strings', () => {
   for (const [base, provider] of [
     ['https://api.deepseek.com/anthropic', 'deepseek'],
@@ -262,12 +296,11 @@ test('auto recognizes supported URL hosts without trusting paths, lookalikes or 
     { GLM_API_KEY: 'dedicated' }, {}), []);
 });
 
-test('auto follows credential URL precedence, switches providers and deduplicates in display order', () => {
+test('auto follows the session URL and deduplicates in display order', () => {
   const config = normalizeConfig({ segments: ['auto', 'model', 'deepseek', 'glm', 'auto'] });
   const settings = { ANTHROPIC_AUTH_TOKEN: 'settings-key', ANTHROPIC_BASE_URL: 'https://api.deepseek.com' };
   const current = { ANTHROPIC_AUTH_TOKEN: 'process-key', ANTHROPIC_BASE_URL: 'https://api.minimax.io' };
-  assert.deepEqual(resolveSegments(config, settings, current), ['deepseek', 'model', 'glm']);
-  delete settings.ANTHROPIC_AUTH_TOKEN;
+  assert.deepEqual(resolveSegments(config, settings, {}), ['deepseek', 'model', 'glm']);
   assert.deepEqual(resolveSegments(config, settings, current), ['minimax', 'model', 'deepseek', 'glm']);
   current.ANTHROPIC_BASE_URL = 'https://api.z.ai';
   assert.deepEqual(resolveSegments(config, settings, current), ['glm', 'model', 'deepseek']);

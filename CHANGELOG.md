@@ -13,6 +13,13 @@ Windows PowerShell 可使用 `npx.cmd`。完成后重启 Claude Code 或开启�
 从旧版首次升级至 1.0.9 时，会先备份旧状态栏配置，再整体替换为新默认配置；此后重复安装保留用户修改。
 替换 Claude 状态栏命令前仍会备份原设置。
 
+## 1.0.10 - 2026-11-15
+
+- 修复 Claude Code 通过 `--settings` 切换 DeepSeek 和 GLM 时的查询 Key 冲突。`auto` 按当前会话的接口地址识别服务商和地区，并优先使用该会话的通用 Key。
+- 切换服务商或国内外平台时，状态栏会跳过属于其他平台或服务商的全局通用 Key。配置了专用 Key 时，查询优先使用它。
+
+**升级提示**：运行 `npx --yes @wenxingyu/glm-statusline@1.0.10 --setup` 更新状态栏运行文件，再开启新的 Claude Code 会话。每份 `--settings` 配置的 `env` 中应同时填写对应的 `ANTHROPIC_BASE_URL` 和 Key。
+
 ## 1.0.9 - 2026-10-16
 
 - 单家服务商默认精简显示档位或余额，多家同时启用时自动加服务商名称；MiniMax 未显示档位及异常提示保留名称，按 `auto` 解析并去重后的服务商数量判断。

@@ -219,8 +219,9 @@ test('installed CLI reads proxies from Claude settings for query and status line
   const installed = await setup({ claudeDir });
   await fs.writeFile(installed.configPath, JSON.stringify({ segments: ['glm'], cacheTtlSeconds: 0 }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
-    !/^(https?_proxy|all_proxy|no_proxy|glm_api_key|glm_statusline_config|anthropic_base_url|node_use_env_proxy)$/i.test(name)));
+    !/^(https?_proxy|all_proxy|no_proxy|glm_api_key|glm_statusline_config|anthropic_.*|node_use_env_proxy)$/i.test(name)));
   Object.assign(env, { HOME: home, USERPROFILE: home, TMP: f.cacheDir, TEMP: f.cacheDir, TMPDIR: f.cacheDir,
+    CLAUDE_CONFIG_DIR: claudeDir,
     NODE_EXTRA_CA_CERTS: fileURLToPath(new URL('./fixtures/proxy-cert.pem', import.meta.url)),
     GLM_STATUSLINE_CONFIG: installed.configPath });
   const run = promisify(execFile);

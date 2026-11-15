@@ -148,32 +148,36 @@ async function loadConfig() {
 // ── API Key / 平台识别 ──────────────────────────────────────
 async function loadClaudeSettingsEnv() {
   try {
-    const p = path.join(os.homedir(), '.claude', 'settings.json');
+    const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    const p = path.join(claudeDir, 'settings.json');
     return JSON.parse(await fs.readFile(p, 'utf8'))?.env ?? {};
   } catch {
     return {};
   }
 }
 
-function resolveBaseUrl(env, current) {
-  // 与通用 Key 的来源优先级一致，避免识别、认证和区域选择使用不同的 URL。
-  const settingsKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY;
-  return String((settingsKey ? env.ANTHROPIC_BASE_URL : current.ANTHROPIC_BASE_URL) ??
-    env.ANTHROPIC_BASE_URL ?? current.ANTHROPIC_BASE_URL ?? '');
+function resolveBaseUrl(settings, current) {
+  // Claude Code 将当前会话生效的 env（含 --settings）传给状态栏进程。
+  return current.ANTHROPIC_BASE_URL ?? settings.ANTHROPIC_BASE_URL ?? '';
 }
 
-export function detectProvider(base) {
+function detectEndpoint(base) {
   try {
     const url = new URL(base);
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     const host = url.hostname.toLowerCase();
-    if (host === 'api.deepseek.com') return 'deepseek';
-    if (['minimaxi.com', 'minimax.cn', 'minimax.io', 'minimax.chat'].some((domain) =>
-      host === domain || host.endsWith(`.${domain}`))) return 'minimax';
-    if (host === 'bigmodel.cn' || host.endsWith('.bigmodel.cn') ||
-      host === 'z.ai' || host.endsWith('.z.ai')) return 'glm';
+    const matches = (domain) => host === domain || host.endsWith(`.${domain}`);
+    if (host === 'api.deepseek.com') return { provider: 'deepseek' };
+    if (matches('minimax.io')) return { provider: 'minimax', platform: 'en' };
+    if (['minimaxi.com', 'minimax.cn', 'minimax.chat'].some(matches)) return { provider: 'minimax', platform: 'cn' };
+    if (matches('z.ai')) return { provider: 'glm', platform: 'en' };
+    if (matches('bigmodel.cn')) return { provider: 'glm', platform: 'cn' };
   } catch { /* 无法识别的代理地址需显式配置对应服务商 Key */ }
   return null;
+}
+
+export function detectProvider(base) {
+  return detectEndpoint(base)?.provider ?? null;
 }
 
 export function resolveSegments(config, env = {}, current = process.env) {
@@ -186,36 +190,43 @@ export function resolveSegments(config, env = {}, current = process.env) {
   return [...new Set(config.segments.map((s) => s === 'auto' ? provider : s).filter(Boolean))];
 }
 
+function credentialEndpoint(base) {
+  // 无 base URL 时保留旧版 GLM 兼容。
+  return base ? detectEndpoint(base) : { provider: 'glm', platform: 'cn' };
+}
+
 export function resolveCredential(provider, env = {}, current = process.env) {
   const dedicated = { glm: 'GLM_API_KEY', deepseek: 'DEEPSEEK_API_KEY', minimax: 'MINIMAX_API_KEY' }[provider];
   const explicit = current[dedicated] || env[dedicated];
   if (explicit) return { key: explicit, mismatch: false };
-  const key = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY ||
-    current.ANTHROPIC_AUTH_TOKEN || current.ANTHROPIC_API_KEY || null;
-  const base = resolveBaseUrl(env, current);
-  const detected = detectProvider(base);
-  // 无 base URL 时保留旧版 GLM 兼容；不猜测通用 sk- Key 属于哪家服务商。
-  const mismatch = Boolean(key && (detected ? detected !== provider : Boolean(base) || provider !== 'glm'));
-  return { key: mismatch ? null : key, mismatch };
+  const names = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+  const settingsKeys = names.map((name) => env[name]);
+  // --settings 可能用另一种通用 Key 变量，进程里也会保留从全局设置继承的值。
+  const sessionKey = names.map((name) => current[name]).find((key) => key && !settingsKeys.includes(key));
+  const key = sessionKey || names.map((name) => current[name] ?? env[name]).find(Boolean);
+  if (!key) return { key: null, mismatch: false };
+
+  const endpoint = credentialEndpoint(resolveBaseUrl(env, current));
+  if (endpoint?.provider !== provider) return { key: null, mismatch: true };
+  if (!sessionKey) {
+    const settingsEndpoint = credentialEndpoint(env.ANTHROPIC_BASE_URL);
+    if (endpoint.provider !== settingsEndpoint?.provider || endpoint.platform !== settingsEndpoint?.platform) {
+      return { key: null, mismatch: true };
+    }
+  }
+  return { key, mismatch: false };
 }
 
 function resolvePlatform(config, env) {
   if (config.glm.platform && config.glm.platform !== 'auto') return config.glm.platform;
-  try {
-    const host = new URL(resolveBaseUrl(env, process.env)).hostname;
-    if (host === 'z.ai' || host.endsWith('.z.ai')) return 'en';
-  } catch { /* 无有效 URL 时默认国内平台 */ }
-  return 'cn'; // bigmodel.cn 及其他情况默认走国内版
+  const endpoint = detectEndpoint(resolveBaseUrl(env, process.env));
+  return endpoint?.provider === 'glm' ? endpoint.platform : 'cn';
 }
 
 export function resolveMiniMaxPlatform(config, env = {}, current = process.env) {
   if (['cn', 'en'].includes(config.minimax?.platform)) return config.minimax.platform;
-  const base = resolveBaseUrl(env, current);
-  try {
-    const host = new URL(base).hostname;
-    if (host === 'minimax.io' || host.endsWith('.minimax.io')) return 'en';
-  } catch { /* 默认国内平台；专用 Key 可显式指定平台 */ }
-  return 'cn';
+  const endpoint = detectEndpoint(resolveBaseUrl(env, current));
+  return endpoint?.provider === 'minimax' ? endpoint.platform : 'cn';
 }
 
 // ── 数据采集 ────────────────────────────────────────────────

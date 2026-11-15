@@ -173,7 +173,7 @@ test('installed MiniMax query and status line use settings credentials and selec
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(minimax_api_key|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
   Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
-    GLM_STATUSLINE_CONFIG: result.configPath });
+    CLAUDE_CONFIG_DIR: path.dirname(result.settingsPath), GLM_STATUSLINE_CONFIG: result.configPath });
   for (const args of [['--query'], []]) {
     const code = `process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify(args)}];
       globalThis.fetch = async (url, options) => {
@@ -200,14 +200,16 @@ test('installed auto routes both query and rendering to the selected provider an
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(glm_api_key|deepseek_api_key|minimax_api_key|anthropic_.*|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
   Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
-    GLM_STATUSLINE_CONFIG: result.configPath });
-  for (const [base, provider, endpoint, body, expected] of [
+    CLAUDE_CONFIG_DIR: path.dirname(result.settingsPath), GLM_STATUSLINE_CONFIG: result.configPath });
+  for (const [base, provider, endpoint, body, expected, globalBase] of [
     ['https://open.bigmodel.cn/api/anthropic', 'glm', 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
       { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } }, '5h 62%'],
     ['https://api.z.ai/api/anthropic', 'glm', 'https://api.z.ai/api/monitor/usage/quota/limit',
-      { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } }, '5h 62%'],
+      { data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 38 }] } }, '5h 62%',
+      'https://api.deepseek.com/anthropic'],
     ['https://api.deepseek.com/anthropic', 'deepseek', 'https://api.deepseek.com/user/balance',
-      { balance_infos: [{ currency: 'CNY', total_balance: '97.81' }] }, '¥97.81'],
+      { balance_infos: [{ currency: 'CNY', total_balance: '97.81' }] }, '¥97.81',
+      'https://open.bigmodel.cn/api/anthropic'],
     ['https://api.minimaxi.com/anthropic', 'minimax', 'https://www.minimaxi.com/v1/token_plan/remains',
       { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
     ['https://api.minimax.cn/anthropic', 'minimax', 'https://www.minimaxi.com/v1/token_plan/remains',
@@ -216,9 +218,11 @@ test('installed auto routes both query and rendering to the selected provider an
     ['https://api.minimax.io/anthropic', 'minimax', 'https://www.minimax.io/v1/token_plan/remains',
       { model_remains: [{ model_name: 'general', current_interval_remaining_percent: 62 }] }, 'MiniMax 5h 62%'],
   ]) {
-    await fs.writeFile(result.settingsPath, JSON.stringify({ env: {
-      ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'fixture-auto-key',
-    } }));
+    const settingsEnv = { ANTHROPIC_BASE_URL: globalBase ?? base,
+      ANTHROPIC_AUTH_TOKEN: globalBase ? 'fixture-global-key' : 'fixture-auto-key' };
+    const sessionEnv = globalBase ? { ...env, ...settingsEnv,
+      ANTHROPIC_BASE_URL: base, ANTHROPIC_API_KEY: 'fixture-auto-key' } : env;
+    await fs.writeFile(result.settingsPath, JSON.stringify({ env: settingsEnv }));
     await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'auto', provider],
       lang: 'en', glm: { showBalance: false }, cacheTtlSeconds: 0 }));
     for (const args of [['--query'], []]) {
@@ -235,7 +239,7 @@ test('installed auto routes both query and rendering to the selected provider an
         await import(${JSON.stringify(pathToFileURL(script).href)});
         process.on('beforeExit', () => { if (calls !== 1) process.exitCode = 2; });`;
       const output = execFileSync(process.execPath, ['--input-type=module', '-e', code], {
-        encoding: 'utf8', input: '{"model":{"display_name":"session"}}', env, timeout: 10000,
+        encoding: 'utf8', input: '{"model":{"display_name":"session"}}', env: sessionEnv, timeout: 10000,
       });
       if (args.length) {
         const info = JSON.parse(output);
@@ -254,7 +258,8 @@ test('providers run concurrently while rendering and query JSON preserve configu
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(glm_api_key|deepseek_api_key|minimax_api_key|anthropic_.*|https?_proxy|all_proxy|no_proxy)$/i.test(name)));
   Object.assign(env, { HOME: home, USERPROFILE: home, TMP: home, TEMP: home, TMPDIR: home,
-    GLM_STATUSLINE_CONFIG: result.configPath, GLM_API_KEY: 'fixture-concurrent-glm',
+    CLAUDE_CONFIG_DIR: path.dirname(result.settingsPath), GLM_STATUSLINE_CONFIG: result.configPath,
+    GLM_API_KEY: 'fixture-concurrent-glm',
     DEEPSEEK_API_KEY: 'fixture-concurrent-deepseek', MINIMAX_API_KEY: 'fixture-concurrent-minimax' });
   await fs.writeFile(result.configPath, JSON.stringify({ segments: ['deepseek', 'glm', 'minimax'],
     lang: 'en', glm: { showBalance: false }, cacheTtlSeconds: 0 }));
@@ -291,7 +296,8 @@ test('unknown auto URLs hide only the provider segment, never query, and explain
   const home = path.dirname(path.dirname(result.settingsPath));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(anthropic_.*|glm_statusline_debug)$/i.test(name)));
-  Object.assign(env, { HOME: home, USERPROFILE: home, GLM_STATUSLINE_CONFIG: result.configPath });
+  Object.assign(env, { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.dirname(result.settingsPath),
+    GLM_STATUSLINE_CONFIG: result.configPath });
   await fs.writeFile(result.configPath, JSON.stringify({ segments: ['model', 'auto', 'ctx'] }));
   for (const base of ['', 'not a URL', 'https://api.anthropic.com', 'https://proxy.example/secret',
     'https://api.deepseek.com.evil.test']) {
