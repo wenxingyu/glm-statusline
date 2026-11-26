@@ -165,6 +165,11 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 | `minimax.level` | `auto` | `go` / `explore` / `build` 手动指定官方档位名称；`auto` 不猜测，当前额度接口未提供档位时隐藏 |
 | `minimax.showLevel` | `true` | 是否显示已配置的 MiniMax 档位名称 |
 
+### Git worktree 显示
+
+默认启用的 `git` 分段会在 linked worktree 中显示分支和 worktree 名称，例如 `feature/login · login-review`。
+支持 Claude Code 的 worktree 会话和手动通过 `git worktree add` 创建的工作树。在主工作树中，`git` 分段只显示分支。
+
 ### 自动识别服务商（默认）
 
 ```json

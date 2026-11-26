@@ -57,7 +57,10 @@ test('auto language re-evaluates locale changes instead of caching the first res
   assert.equal(resolveLanguage('auto', { env }), 'en');
 });
 
-test('git branches are found beyond five levels and in relative worktrees', async (t) => {
+const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+const renderGit = async (input) => strip(await render(input, normalizeConfig({ segments: ['git'] })));
+
+test('git branches are found beyond five levels and through .git files', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-statusline-git-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const nested = path.join(dir, 'a', 'b', 'c', 'd', 'e', 'f');
@@ -65,13 +68,48 @@ test('git branches are found beyond five levels and in relative worktrees', asyn
   await fs.mkdir(path.join(dir, '.git'));
   await fs.writeFile(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/feature/deep\n');
   assert.equal(await gitBranch(nested), 'feature/deep');
-  const worktree = path.join(dir, 'worktree');
-  await fs.mkdir(worktree);
-  await fs.writeFile(path.join(worktree, '.git'), 'gitdir: ../.git\n');
-  assert.equal(await gitBranch(worktree), 'feature/deep');
+  assert.equal(await renderGit({ cwd: nested }), 'feature/deep');
+  const submodule = path.join(dir, 'submodule');
+  const gitDir = path.join(dir, '.git', 'modules', 'submodule');
+  await fs.mkdir(submodule);
+  await fs.mkdir(gitDir, { recursive: true });
+  await fs.writeFile(path.join(gitDir, 'HEAD'), 'ref: refs/heads/submodule-branch\n');
+  await fs.writeFile(path.join(submodule, '.git'), 'gitdir: ../.git/modules/submodule\n');
+  assert.equal(await gitBranch(submodule), 'submodule-branch');
+  assert.equal(await renderGit({ cwd: submodule }), 'submodule-branch');
 });
 
-const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+test('linked worktrees are named by their checkout directory even from a subdirectory', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-statusline-worktree-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const worktree = path.join(dir, 'worktree with spaces');
+  const nested = path.join(worktree, 'src');
+  const gitDir = path.join(dir, 'main', '.git', 'worktrees', 'worktree-id');
+  await fs.mkdir(nested, { recursive: true });
+  await fs.mkdir(gitDir, { recursive: true });
+  await fs.writeFile(path.join(gitDir, 'commondir'), '../..\n');
+  await fs.writeFile(path.join(gitDir, 'HEAD'), 'ref: refs/heads/feature/deep\n');
+  await fs.writeFile(path.join(worktree, '.git'), 'gitdir: ../main/.git/worktrees/worktree-id\n');
+  assert.equal(await gitBranch(nested), 'feature/deep');
+  assert.equal(await renderGit({ workspace: { current_dir: nested } }), 'feature/deep · worktree with spaces');
+  assert.equal(await renderGit({ worktree: { path: worktree, name: 'session-name', branch: 'old-branch' } }),
+    'feature/deep · session-name');
+
+  await fs.writeFile(path.join(worktree, '.git'), `gitdir: ${gitDir}\r\n`);
+  await fs.writeFile(path.join(gitDir, 'HEAD'), `${'a'.repeat(40)}\n`);
+  assert.equal(await renderGit({ cwd: nested }), '(detached) · worktree with spaces');
+});
+
+test('Claude Code worktree metadata can render with no Git checkout', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-statusline-worktree-payload-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  assert.equal(await renderGit({ cwd: dir }), '');
+  assert.equal(await renderGit({ cwd: dir, workspace: { git_worktree: 'linked-name' } }), 'linked-name');
+  assert.equal(await renderGit({ cwd: dir, worktree: { name: 'hook-worktree' } }), 'hook-worktree');
+  assert.equal(await renderGit({ cwd: dir, worktree: { name: 'session-name', branch: 'worktree-session-name' },
+    workspace: { git_worktree: 'linked-name' } }), 'worktree-session-name · session-name');
+});
+
 test('one provider uses compact labels and distinct providers get names after auto deduplication', async () => {
   const preview = async (segments, options = {}) => strip(await render({}, {
     ...normalizeConfig({ lang: 'en', segments, ...options }), _demo: true,

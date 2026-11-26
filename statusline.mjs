@@ -248,27 +248,26 @@ async function readStdinJson() {
   });
 }
 
-export async function gitBranch(cwd) {
+async function gitCheckout(cwd) {
   let dir = path.resolve(cwd);
-  while (dir) {
+  while (true) {
     const dotGit = path.join(dir, '.git');
     const st = await fs.stat(dotGit).catch(() => null);
-    if (st) {
-      let head = null;
-      if (st.isDirectory()) {
-        head = await fs.readFile(path.join(dotGit, 'HEAD'), 'utf8').catch(() => null);
-      } else {
-        // worktree：.git 是文件，内容形如 "gitdir: <path>"
-        const s = await fs.readFile(dotGit, 'utf8').catch(() => null);
-        const m = s && s.match(/gitdir:\s*(.+)/);
-        if (m) {
-          const gd = path.isAbsolute(m[1].trim()) ? m[1].trim() : path.join(dir, m[1].trim());
-          head = await fs.readFile(path.join(gd, 'HEAD'), 'utf8').catch(() => null);
-        }
-      }
+    let gitDir = st?.isDirectory() ? dotGit : null;
+    if (st?.isFile()) {
+      const gitFile = await fs.readFile(dotGit, 'utf8').catch(() => null);
+      const target = gitFile?.match(/^gitdir:[ \t]*(.+)/)?.[1].trim();
+      if (target) gitDir = path.resolve(dir, target);
+    }
+    if (gitDir) {
+      const head = await fs.readFile(path.join(gitDir, 'HEAD'), 'utf8').catch(() => null);
       if (head) {
-        const m = head.match(/^ref:\s*refs\/heads\/(\S+)/);
-        return m ? m[1] : '(detached)';
+        // 子模块也可能使用 .git 文件，linked worktree 的 Git 目录另有 commondir。
+        const commonDir = st.isFile() ? await fs.stat(path.join(gitDir, 'commondir')).catch(() => null) : null;
+        return {
+          branch: head.match(/^ref:\s*refs\/heads\/(\S+)/)?.[1] ?? '(detached)',
+          worktree: commonDir?.isFile() ? path.basename(dir) : null,
+        };
       }
     }
     const parent = path.dirname(dir);
@@ -276,6 +275,14 @@ export async function gitBranch(cwd) {
     dir = parent;
   }
   return null;
+}
+
+export async function gitBranch(cwd) {
+  return (await gitCheckout(cwd))?.branch ?? null;
+}
+
+function gitLabel(value) {
+  return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim() : '';
 }
 
 const tokenFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
@@ -460,7 +467,8 @@ export async function render(input, config) {
   if (!input || typeof input !== 'object') input = {};
   config = { ...config, lang: resolveLanguage(config.lang) };
   const t = L[config.lang];
-  const cwd = input.workspace?.current_dir || input.cwd || process.cwd();
+  const cwd = [input.workspace?.current_dir, input.cwd, input.worktree?.path]
+    .find((dir) => typeof dir === 'string' && dir.length > 0) ?? process.cwd();
   const env = config.segments.some((s) => s === 'auto' || PROVIDERS.includes(s)) && !config._demo
     ? await loadClaudeSettingsEnv() : {};
   config = { ...config, segments: resolveSegments(config, env) };
@@ -486,8 +494,12 @@ export async function render(input, config) {
         break;
       }
       case 'git': {
-        const branch = await gitBranch(cwd);
-        if (branch) parts.git = paint(branch, shade('magenta'));
+        const checkout = await gitCheckout(cwd);
+        const branch = checkout?.branch ?? gitLabel(input.worktree?.branch);
+        const worktree = gitLabel(input.worktree?.name) || gitLabel(input.workspace?.git_worktree)
+          || gitLabel(checkout?.worktree);
+        const label = [branch, worktree].filter(Boolean).join(' · ');
+        if (label) parts.git = paint(label, shade('magenta'));
         break;
       }
       case 'ctx': {
