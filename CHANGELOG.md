@@ -13,6 +13,15 @@ Windows PowerShell 可使用 `npx.cmd`。完成后重启 Claude Code 或开启�
 从旧版首次升级至 1.0.9 时，会先备份旧状态栏配置，再整体替换为新默认配置；此后重复安装保留用户修改。
 替换 Claude 状态栏命令前仍会备份原设置。
 
+## 1.0.11 - 2026-11-26
+
+- Git 分段会显示当前分支和 worktree 名称，例如 `feature/login · login-review`。支持 Claude Code 的 worktree 会话和通过 `git worktree add` 创建的工作树。
+- 从 worktree 的子目录打开会话时仍可识别工作树。主工作树中只显示分支名。
+
+**升级提示**
+
+运行 `npx --yes @wenxingyu/glm-statusline@1.0.11 --setup` 更新状态栏运行文件，再开启新的 Claude Code 会话。配置中的 `segments` 包含 `git` 即可显示 worktree。
+
 ## 1.0.10 - 2026-11-15
 
 - 修复 Claude Code 通过 `--settings` 切换 DeepSeek 和 GLM 时的查询 Key 冲突。`auto` 按当前会话的接口地址识别服务商和地区，并优先使用该会话的通用 Key。

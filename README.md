@@ -35,6 +35,7 @@ deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k �
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.11** · 2026-11-26 | Git 分段显示当前 worktree 名称，例如 `feature/login · login-review` | 使用 Claude Code worktree 会话或手动管理 Git worktree 的用户 |
 | **1.0.10** · 2026-11-15 | 修复 Claude Code `--settings` 切换 DeepSeek 和 GLM 时的状态栏查询 Key 冲突 | 通过 `--settings` 切换服务商或国内外平台的用户 |
 | **1.0.9** · 2026-10-16 | 默认显示 token 和速度；首次升级备份并重置配置；修复 MiniMax 国内域名识别，统一精简显示 | 所有用户；升级需运行 `--setup`，原状态栏自定义配置会先备份再重置 |
 | **1.0.8** · 2026-10-16 | 自动识别 GLM / DeepSeek / MiniMax，新增会话 token 和估算速度，多服务商并发查询 | 使用多家服务商或关注会话用量的用户；已有配置需将服务商分段改为 `auto` |
@@ -54,7 +55,7 @@ npx --yes @wenxingyu/glm-statusline@latest --setup
 ```
 
 Windows PowerShell 可将 `npx` 换成 `npx.cmd`。随后重启 Claude Code 或开启新会话。
-本次升级的 `--setup` 会先备份旧状态栏配置，再整体替换为新默认配置，自动启用 `tok`、`speed`、`auto`。
+从早于 1.0.9 的版本首次升级时，`--setup` 会先备份旧状态栏配置，再整体替换为新默认配置，自动启用 `tok`、`speed`、`auto`。
 替换仅执行一次，此后重复安装保留用户修改；仅升级全局 npm 包不会更新已部署的运行文件。
 
 ## 安装
