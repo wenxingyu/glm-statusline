@@ -35,6 +35,7 @@ deepseek-flash[1m] | glm-statusline | ctx ~82% | tok 11.9M ↑104.7k ↓94.5k �
 
 | 版本 | 主要变化 | 哪些用户建议升级 |
 |---|---|---|
+| **1.0.12** · 2026-11-27 | Git worktree 改用 `🌳` 图标，终端背景未知时目录名使用亮蓝色 | 使用 worktree 或深色终端的用户 |
 | **1.0.11** · 2026-11-26 | Git 分段显示当前 worktree 名称，例如 `feature/login · login-review` | 使用 Claude Code worktree 会话或手动管理 Git worktree 的用户 |
 | **1.0.10** · 2026-11-15 | 修复 Claude Code `--settings` 切换 DeepSeek 和 GLM 时的状态栏查询 Key 冲突 | 通过 `--settings` 切换服务商或国内外平台的用户 |
 | **1.0.9** · 2026-10-16 | 默认显示 token 和速度；首次升级备份并重置配置；修复 MiniMax 国内域名识别，统一精简显示 | 所有用户；升级需运行 `--setup`，原状态栏自定义配置会先备份再重置 |
@@ -168,8 +169,8 @@ Claude Code 在 Windows 上有 Git Bash 时使用 Git Bash，没有时使用 Pow
 
 ### Git worktree 显示
 
-默认启用的 `git` 分段会在 linked worktree 中显示分支和 worktree 名称，例如 `feature/login · login-review`。
-支持 Claude Code 的 worktree 会话和手动通过 `git worktree add` 创建的工作树。在主工作树中，`git` 分段只显示分支。
+默认启用的 `git` 分段会在 linked worktree 的分支名前显示 `🌳` 图标，例如 `🌳 feature/login`，不再重复显示 worktree 名称。
+支持 Claude Code 的 worktree 会话和手动通过 `git worktree add` 创建的工作树。在主工作树中，`git` 分段只显示分支，不显示图标。仅有 worktree 信息而无法读取分支时，只显示 `🌳`。
 
 ### 自动识别服务商（默认）
 
@@ -301,8 +302,8 @@ Claude settings.env 中的 `GLM_API_KEY` / `DEEPSEEK_API_KEY`，进程环境优�
 没有可靠时间戳或有效输出时显示 `-- tok/s`。只启用 `tok` / `speed` 中任意一项时才扫描累计用量。
 
 深色背景由 `COLORFGBG` 最后一项识别；256 色能力由 `TERM` / `COLORTERM` 判断。
-深色终端分别使用蓝 75、紫 177、红 203；无 256 色时退回亮色 16 色，浅色或未知背景使用原标准色。
-未设置 `COLORFGBG` 的终端不会自动推断深浅，可在终端环境中设置（例如深色为 `15;0`）。
+深色终端分别使用蓝 75、紫 177、红 203；无 256 色时退回亮色 16 色，浅色背景使用原标准色。
+未设置 `COLORFGBG` 或背景信息无效时，目录名也使用亮蓝色（支持 256 色时使用蓝 75），提高可读性；其余颜色保留标准色。可在终端环境中显式设置背景（例如深色为 `15;0`）。
 
 `lang: "auto"` 优先读取运行环境中有效的 `LC_ALL`、`LC_MESSAGES`、`LANG`，
 没有有效值时使用 Node.js `Intl` 提供的系统默认区域语言。中文区域（包括简体、繁体）使用中文，

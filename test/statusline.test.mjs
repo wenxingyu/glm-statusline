@@ -79,7 +79,7 @@ test('git branches are found beyond five levels and through .git files', async (
   assert.equal(await renderGit({ cwd: submodule }), 'submodule-branch');
 });
 
-test('linked worktrees are named by their checkout directory even from a subdirectory', async (t) => {
+test('linked worktrees show an icon without repeating their name even from a subdirectory', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-statusline-worktree-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const worktree = path.join(dir, 'worktree with spaces');
@@ -91,23 +91,25 @@ test('linked worktrees are named by their checkout directory even from a subdire
   await fs.writeFile(path.join(gitDir, 'HEAD'), 'ref: refs/heads/feature/deep\n');
   await fs.writeFile(path.join(worktree, '.git'), 'gitdir: ../main/.git/worktrees/worktree-id\n');
   assert.equal(await gitBranch(nested), 'feature/deep');
-  assert.equal(await renderGit({ workspace: { current_dir: nested } }), 'feature/deep · worktree with spaces');
+  assert.equal(await renderGit({ workspace: { current_dir: nested } }), '🌳 feature/deep');
   assert.equal(await renderGit({ worktree: { path: worktree, name: 'session-name', branch: 'old-branch' } }),
-    'feature/deep · session-name');
+    '🌳 feature/deep');
 
   await fs.writeFile(path.join(worktree, '.git'), `gitdir: ${gitDir}\r\n`);
   await fs.writeFile(path.join(gitDir, 'HEAD'), `${'a'.repeat(40)}\n`);
-  assert.equal(await renderGit({ cwd: nested }), '(detached) · worktree with spaces');
+  assert.equal(await renderGit({ cwd: nested }), '🌳 (detached)');
 });
 
 test('Claude Code worktree metadata can render with no Git checkout', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glm-statusline-worktree-payload-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   assert.equal(await renderGit({ cwd: dir }), '');
-  assert.equal(await renderGit({ cwd: dir, workspace: { git_worktree: 'linked-name' } }), 'linked-name');
-  assert.equal(await renderGit({ cwd: dir, worktree: { name: 'hook-worktree' } }), 'hook-worktree');
+  assert.equal(await renderGit({ cwd: dir, workspace: { git_worktree: 'linked-name' } }), '🌳');
+  assert.equal(await renderGit({ cwd: dir, worktree: { name: 'hook-worktree' } }), '🌳');
   assert.equal(await renderGit({ cwd: dir, worktree: { name: 'session-name', branch: 'worktree-session-name' },
-    workspace: { git_worktree: 'linked-name' } }), 'worktree-session-name · session-name');
+    workspace: { git_worktree: 'linked-name' } }), '🌳 worktree-session-name');
+  assert.equal(await renderGit({ cwd: dir, worktree: { branch: 'feature/plain' } }), 'feature/plain');
+  assert.equal(await renderGit({ cwd: dir, worktree: { name: ' ' }, workspace: { git_worktree: '' } }), '');
 });
 
 test('one provider uses compact labels and distinct providers get names after auto deduplication', async () => {
@@ -254,13 +256,23 @@ test('optional segments preserve order and speedSamples accepts only one through
   assert.equal(normalizeConfig({ speedSamples: 20 }).speedSamples, 20);
 });
 
-test('dark colors adapt to terminal capabilities and light or unknown backgrounds retain standard colors', () => {
+test('dark colors adapt to terminal capabilities and light backgrounds retain standard colors', () => {
   assert.equal(shade('blue', { COLORFGBG: '15;0', TERM: 'xterm-256color' }), '\x1b[38;5;75m');
   assert.equal(shade('magenta', { COLORFGBG: '15;0', COLORTERM: 'truecolor' }), '\x1b[38;5;177m');
   assert.equal(shade('red', { COLORFGBG: '15;0', TERM: 'xterm-256color' }), '\x1b[38;5;203m');
   assert.equal(shade('blue', { COLORFGBG: '15;0', TERM: 'xterm' }), '\x1b[94m');
   assert.equal(shade('blue', { COLORFGBG: '0;15', TERM: 'xterm-256color' }), '\x1b[34m');
-  assert.equal(shade('blue', {}), '\x1b[34m');
+});
+
+test('directory blue stays readable when terminal background information is missing', () => {
+  assert.equal(shade('blue', {}), '\x1b[94m');
+  assert.equal(shade('blue', { TERM: 'xterm-256color' }), '\x1b[38;5;75m');
+  assert.equal(shade('blue', { COLORTERM: 'truecolor' }), '\x1b[38;5;75m');
+  for (const COLORFGBG of ['', 'unknown', '15;']) {
+    assert.equal(shade('blue', { COLORFGBG }), '\x1b[94m');
+  }
+  assert.equal(shade('magenta', {}), '\x1b[35m');
+  assert.equal(shade('red', {}), '\x1b[31m');
 });
 
 test('credentials are routed by provider with independent explicit overrides', () => {

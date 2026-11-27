@@ -13,6 +13,15 @@ Windows PowerShell 可使用 `npx.cmd`。完成后重启 Claude Code 或开启�
 从旧版首次升级至 1.0.9 时，会先备份旧状态栏配置，再整体替换为新默认配置；此后重复安装保留用户修改。
 替换 Claude 状态栏命令前仍会备份原设置。
 
+## 1.0.12 - 2026-11-27
+
+- Git worktree 使用分支名前的 `🌳` 图标标识，不再重复显示 worktree 名称；主工作树不显示图标。
+- 终端未提供有效背景色信息时，目录名默认使用亮蓝色，提高深色背景下的可读性。
+
+**升级提示**
+
+运行 `npx --yes @wenxingyu/glm-statusline@1.0.12 --setup` 更新状态栏运行文件，再开启新的 Claude Code 会话。保留 `git` 分段即可显示 worktree 图标。
+
 ## 1.0.11 - 2026-11-26
 
 - Git 分段会显示当前分支和 worktree 名称，例如 `feature/login · login-review`。支持 Claude Code 的 worktree 会话和通过 `git worktree add` 创建的工作树。

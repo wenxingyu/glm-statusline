@@ -39,7 +39,9 @@ const paint = (s, color) => `${color}${s}${C.reset}`;
 
 export function shade(name, env = process.env) {
   const background = String(env.COLORFGBG ?? '').split(';').at(-1);
-  const dark = /^\d+$/.test(background) && [0, 1, 2, 3, 4, 5, 6, 8].includes(Number(background));
+  // Claude Code 的终端不一定提供 COLORFGBG；未知背景时目录名也使用亮蓝色。
+  const dark = /^\d+$/.test(background)
+    ? [0, 1, 2, 3, 4, 5, 6, 8].includes(Number(background)) : name === 'blue';
   if (!dark) return C[name];
   const index = { blue: 75, magenta: 177, red: 203 }[name];
   if (!index) return C[name];
@@ -266,7 +268,7 @@ async function gitCheckout(cwd) {
         const commonDir = st.isFile() ? await fs.stat(path.join(gitDir, 'commondir')).catch(() => null) : null;
         return {
           branch: head.match(/^ref:\s*refs\/heads\/(\S+)/)?.[1] ?? '(detached)',
-          worktree: commonDir?.isFile() ? path.basename(dir) : null,
+          worktree: Boolean(commonDir?.isFile()),
         };
       }
     }
@@ -496,9 +498,9 @@ export async function render(input, config) {
       case 'git': {
         const checkout = await gitCheckout(cwd);
         const branch = checkout?.branch ?? gitLabel(input.worktree?.branch);
-        const worktree = gitLabel(input.worktree?.name) || gitLabel(input.workspace?.git_worktree)
-          || gitLabel(checkout?.worktree);
-        const label = [branch, worktree].filter(Boolean).join(' · ');
+        const worktree = checkout?.worktree || gitLabel(input.worktree?.name)
+          || gitLabel(input.workspace?.git_worktree);
+        const label = [worktree ? '🌳' : '', branch].filter(Boolean).join(' ');
         if (label) parts.git = paint(label, shade('magenta'));
         break;
       }
