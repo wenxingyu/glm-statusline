@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { writeCache, acquireLock, recoverLock } from './cache.mjs';
 
 const FIELDS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+const CHECKPOINT_BYTES = 8 * 1024 * 1024;
 const validNumber = (n) => Number.isSafeInteger(n) && n >= 0;
 const hash = (s) => createHash('sha256').update(s).digest('hex');
 const empty = () => ({ kind: 'tokens-v1', offset: 0, totals: [0, 0, 0, 0], seen: {},
@@ -56,14 +57,43 @@ async function fingerprint(fh, offset) {
   return hash(b.subarray(0, bytesRead));
 }
 
-function validCache(c) {
-  return c?.version === 2 && c.kind === 'tokens-v1' && validNumber(c.offset) &&
+function validTotals(c) {
+  return validNumber(c.offset) && validNumber(c.records) &&
     Array.isArray(c.totals) && c.totals.length === 4 && c.totals.every(validNumber) &&
-    c.seen && typeof c.seen === 'object' && !Array.isArray(c.seen) &&
-    Object.values(c.seen).every((v) => Array.isArray(v) && v.length === 4 && v.every(validNumber)) &&
     Array.isArray(c.samples) && c.samples.length <= 20 && c.samples.every((s) =>
-      typeof s?.id === 'string' && validNumber(s.tokens) && Number.isFinite(s.ms) && s.ms > 0) &&
-    Number.isFinite(c.maxTimestamp) && validNumber(c.records) && typeof c.skipping === 'boolean';
+      typeof s?.id === 'string' && validNumber(s.tokens) && Number.isFinite(s.ms) && s.ms > 0);
+}
+
+function validCache(c) {
+  if (c?.version !== 2 || c.kind !== 'tokens-v1' || !validTotals(c) ||
+    !Number.isFinite(c.maxTimestamp) || typeof c.skipping !== 'boolean' ||
+    !c.seen || typeof c.seen !== 'object' || Array.isArray(c.seen)) return false;
+  for (const key of Object.keys(c.seen)) {
+    const values = c.seen[key];
+    if (!Array.isArray(values) || values.length !== 4 || !values.every(validNumber)) return false;
+  }
+  return true;
+}
+
+const fileIdentity = (stat) => `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+const fileStamp = (stat) => `${fileIdentity(stat)}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+
+async function matchesTranscript(fh, state) {
+  const anchor = fingerprint(fh, state.offset);
+  const head = state.offset <= 256 ? anchor : fingerprint(fh, 256);
+  const [actualAnchor, actualHead] = await Promise.all([anchor, head]);
+  return state.anchor === actualAnchor && state.head === actualHead;
+}
+
+async function readSummary(file, summaryFile, fh, stat) {
+  try {
+    const summary = JSON.parse(await fs.readFile(summaryFile, 'utf8'));
+    if (summary?.version !== 2 || summary.kind !== 'tokens-summary-v1' ||
+      summary.transcript !== fileStamp(stat) || summary.offset !== stat.size || !validTotals(summary)) return null;
+    // 摘要与完整检查点绑定。写入中断或检查点被替换时回到原有校验流程。
+    if (summary.checkpoint === fileStamp(await fs.stat(file)) && await matchesTranscript(fh, summary)) return summary;
+  } catch { /* 旧版本或不完整的缓存没有可用摘要 */ }
+  return null;
 }
 
 export async function tokenTotals(transcriptPath, {
@@ -75,43 +105,57 @@ export async function tokenTotals(transcriptPath, {
   try {
     const source = await fs.realpath(transcriptPath);
     fh = await fs.open(source, 'r');
-    const stat = await fh.stat();
+    let stat = await fh.stat();
     if (!stat.isFile()) return null;
     const file = path.join(cacheDir, `${hash(source)}.json`);
-    const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+    const summaryFile = `${file}.summary`;
+    const summary = await readSummary(file, summaryFile, fh, stat);
+    if (summary) return result(summary, stat.size);
     const read = async () => {
       try {
         const c = JSON.parse(await fs.readFile(file, 'utf8'));
-        if (validCache(c) && c.identity === identity && c.offset <= stat.size &&
-          c.anchor === await fingerprint(fh, c.offset) &&
-          c.head === await fingerprint(fh, Math.min(c.offset, 256)) &&
-          !(c.size === stat.size && c.mtime !== stat.mtimeMs)) return c;
+        if (c?.identity === fileIdentity(stat) && c.offset <= stat.size &&
+          !(c.size === stat.size && (c.mtime !== stat.mtimeMs || (c.ctime != null && c.ctime !== stat.ctimeMs))) &&
+          validCache(c) && await matchesTranscript(fh, c)) return c;
       } catch { /* 首次扫描、损坏或被替换的缓存：重建 */ }
       return empty();
     };
     release = await acquireLock(file);
     if (!release) { await recoverLock(file); release = await acquireLock(file); }
     if (!release) return result(await read(), stat.size);
+    stat = await fh.stat();
     const state = await read();
-    if (state.version === 2 && state.offset === stat.size) return result(state, stat.size);
+    const saveSummary = async () => {
+      if (state.offset !== stat.size) return;
+      const { offset, totals, records, samples, anchor, head } = state;
+      const checkpoint = await fs.stat(file).catch(() => null);
+      if (checkpoint) await writeCache(summaryFile, { kind: 'tokens-summary-v1', offset, totals, records, samples,
+        anchor, head, transcript: fileStamp(stat), checkpoint: fileStamp(checkpoint) });
+    };
+    if (state.version === 2 && state.offset === stat.size) {
+      await saveSummary();
+      return result(state, stat.size);
+    }
     let position = state.offset;
     let pending = Buffer.alloc(0);
     const buf = Buffer.alloc(256 * 1024);
     const stop = Math.min(stat.size, position + Math.max(buf.length, maxBytes));
     const checkpoint = async () => {
-      state.identity = identity;
-      state.anchor = await fingerprint(fh, state.offset);
-      state.head = await fingerprint(fh, Math.min(state.offset, 256));
+      state.identity = fileIdentity(stat);
+      const anchor = fingerprint(fh, state.offset);
+      [state.anchor, state.head] = await Promise.all([anchor, state.offset <= 256 ? anchor : fingerprint(fh, 256)]);
       state.size = stat.size;
       state.mtime = stat.mtimeMs;
-      await writeCache(file, state);
+      state.ctime = stat.ctimeMs;
+      return writeCache(file, state);
     };
     let saved = state.offset;
     while (position < stop) {
       const { bytesRead } = await fh.read(buf, 0, Math.min(buf.length, stop - position), position);
       if (!bytesRead) break;
       position += bytesRead;
-      const data = Buffer.concat([pending, buf.subarray(0, bytesRead)]);
+      const chunk = buf.subarray(0, bytesRead);
+      const data = pending.length ? Buffer.concat([pending, chunk]) : chunk;
       let start = 0, end;
       while ((end = data.indexOf(10, start)) !== -1) {
         if (!state.skipping) consume(data.subarray(start, end).toString('utf8'), state);
@@ -126,9 +170,10 @@ export async function tokenTotals(transcriptPath, {
         state.skipping = true;
         state.offset = position;
       }
-      if (state.offset - saved >= 1024 * 1024) { await checkpoint(); saved = state.offset; }
+      // 长扫描定期保存进度，常见的小批量扫描只在末尾写一次完整表。
+      if (position < stop && state.offset - saved >= CHECKPOINT_BYTES) { await checkpoint(); saved = state.offset; }
     }
-    await checkpoint();
+    if (await checkpoint()) await saveSummary();
     return result(state, stat.size);
   } catch { return null; }
   finally {

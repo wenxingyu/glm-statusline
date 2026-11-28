@@ -8,17 +8,20 @@ export async function writeCache(file, cache) {
   try {
     await fs.writeFile(tmp, JSON.stringify({ version: 2, ...cache }), { mode: 0o600 });
     await fs.rename(tmp, file);
+    return true;
   } catch (e) {
     // 缓存写失败不影响主流程
     if (process.env.GLM_STATUSLINE_DEBUG) console.error('缓存写入失败:', e.message);
-  } finally {
     await fs.unlink(tmp).catch(() => {});
+    return false;
   }
 }
 
 // 独占文件锁：其他进程立即返回可用缓存，不阻塞状态栏等待网络。
-export async function acquireLock(file) {
+export async function acquireLock(file, { inherit = false } = {}) {
   const lock = `${file}.lock`;
+  const release = async () => { await fs.unlink(lock).catch(() => {}); };
+  if (inherit && await fs.readFile(lock, 'utf8').catch(() => null) === String(process.pid)) return release;
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
   } catch {
@@ -31,7 +34,9 @@ export async function acquireLock(file) {
     } finally {
       await handle.close();
     }
-    return async () => { await fs.unlink(lock).catch(() => {}); };
+    // 父进程在给子进程发送查询参数之前移交锁，避免并发刷新重复启动子进程。
+    release.handoff = (pid) => fs.writeFile(lock, String(pid), { flag: 'w' });
+    return release;
   } catch (e) {
     if (e.code !== 'EEXIST') return async () => {}; // 临时目录不可写时仍允许查询
     return null;
@@ -64,8 +69,14 @@ export async function recoverLock(file) {
 }
 
 // 单一数据源的缓存流程；保留各服务商现有的字段和文件格式。
+export function canRefreshInBackground(entry, ttlSec, staleSec, field = 'value') {
+  const now = Date.now();
+  return ttlSec > 0 && staleSec > 0 && entry?.[field] != null &&
+    entry.updatedAt > 0 && entry.updatedAt <= now && now - entry.updatedAt <= staleSec * 1000;
+}
+
 export async function cachedQuery({ file, field = 'value', valid, fetchValue, errorMessage,
-  ttlSec, staleSec, force }) {
+  ttlSec, staleSec, force, scheduleRefresh, inheritedLock }) {
   const read = async () => {
     try {
       const c = JSON.parse(await fs.readFile(file, 'utf8'));
@@ -87,14 +98,21 @@ export async function cachedQuery({ file, field = 'value', valid, fetchValue, er
       stale: Boolean(usable && !updated && (c.error || age >= ttlSec * 1000)),
       age: usable ? age : -1, refreshing, error: usable ? null : c?.error ?? null };
   };
+  let release = inheritedLock ? await acquireLock(file, { inherit: true }) : null;
   let prev = await read();
-  if (!due(prev)) return show(prev);
-  let release = await acquireLock(file);
+  if (!due(prev)) { await release?.(); return show(prev); }
+  release ??= await acquireLock(file);
   if (!release) { await recoverLock(file); release = await acquireLock(file); }
   if (!release) return show(await read(), true);
   try {
     prev = await read();
     if (!due(prev)) return show(prev);
+    if (!force && scheduleRefresh && release.handoff &&
+      canRefreshInBackground(prev, ttlSec, staleSec, field) &&
+      await scheduleRefresh(release.handoff)) {
+      release = null;
+      return show(prev, true);
+    }
     let cache;
     try {
       const value = await fetchValue();
@@ -107,5 +125,5 @@ export async function cachedQuery({ file, field = 'value', valid, fetchValue, er
     }
     await writeCache(file, cache);
     return show(cache, false, !cache.error);
-  } finally { await release(); }
+  } finally { await release?.(); }
 }

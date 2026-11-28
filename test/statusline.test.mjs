@@ -230,6 +230,12 @@ test('transcript scanning finds usage beyond the old 128 KiB tail', async (t) =>
   assert.equal(await renderCtx({ transcript_path: file }), 'ctx ~80%');
 });
 
+test('context scanning parses a UTF-8 assistant record that spans chunks with no final newline', async (t) => {
+  const latest = assistant({ input_tokens: 40000 }, { content: '中'.repeat(100000) });
+  const file = await transcript(t, assistant({ input_tokens: 10000 }) + '\n' + latest);
+  assert.equal(await renderCtx({ transcript_path: file }), 'ctx ~80%');
+});
+
 test('compaction prevents fallback to pre-compaction usage until a new assistant response', async (t) => {
   const before = assistant({ input_tokens: 170000 }) + '\n' +
     JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n';

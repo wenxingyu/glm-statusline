@@ -75,7 +75,27 @@ try {
     const cache = path.join(cacheDir, (await fs.readdir(cacheDir)).find((name) => name.endsWith('.json')));
     console.log(JSON.stringify({ scenario: 'synthetic session, no new records on warm reads', records: count,
       coldMs, warmMedianMs: warmMs, cacheMiB: +((await fs.stat(cache)).size / 1024 ** 2).toFixed(2) }));
+    if (count === 50000) {
+      const times = [];
+      for (let i = 0; i < 5; i++) {
+        await fs.appendFile(file, JSON.stringify({ type: 'assistant', message: {
+          id: `appended-${i}`, usage: { input_tokens: 100, output_tokens: 50 },
+        } }) + '\n');
+        const start = performance.now();
+        const updated = await tokenTotals(file, { cacheDir });
+        times.push(performance.now() - start);
+        if (updated?.total !== (count + i + 1) * 150 || updated.partial) throw new Error('Incorrect incremental total');
+      }
+      console.log(JSON.stringify({ scenario: '50k session, one additional response', medianMs: Math.round(median(times) * 10) / 10 }));
+    }
   }
+
+  const history = path.join(root, 'ctx-history.jsonl');
+  const userRecord = JSON.stringify({ type: 'user', message: { role: 'user', content: 'x'.repeat(140) } }) + '\n';
+  await fs.writeFile(history, userRecord.repeat(Math.ceil(4.5 * 1024 ** 2 / userRecord.length)));
+  const ctxConfig = normalizeConfig({ segments: ['ctx'], lang: 'en' });
+  console.log(JSON.stringify({ scenario: 'ctx fallback, no usage in last 4 MiB',
+    medianMs: await measure(() => render({ transcript_path: history }, ctxConfig)) }));
 } finally {
   globalThis.fetch = originalFetch;
   for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];

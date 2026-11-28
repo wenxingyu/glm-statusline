@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fetchWithProxy, proxyForUrl, proxyEnvironment } from '../proxy.mjs';
 import { getGlmInfo } from '../glm.mjs';
 import { setup } from '../setup.mjs';
@@ -208,8 +209,7 @@ test('redirects use the same proxy policy and strip credentials across origins',
   assert.deepEqual(seen, ['test-key', undefined]);
 });
 
-test('installed CLI reads proxies from Claude settings for query and status line', async (t) => {
-  const f = await fixture(t);
+async function installedGlm(f, config) {
   const home = path.join(f.cacheDir, 'home');
   const claudeDir = path.join(home, '.claude');
   await fs.mkdir(claudeDir, { recursive: true });
@@ -217,19 +217,67 @@ test('installed CLI reads proxies from Claude settings for query and status line
     ANTHROPIC_AUTH_TOKEN: 'fixture-api-key', HTTPS_PROXY: f.proxyUrl,
   } }));
   const installed = await setup({ claudeDir });
-  await fs.writeFile(installed.configPath, JSON.stringify({ segments: ['glm'], cacheTtlSeconds: 0 }));
+  await fs.writeFile(installed.configPath, JSON.stringify({ segments: ['glm'], lang: 'en', ...config }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(https?_proxy|all_proxy|no_proxy|glm_api_key|glm_statusline_config|anthropic_.*|node_use_env_proxy)$/i.test(name)));
   Object.assign(env, { HOME: home, USERPROFILE: home, TMP: f.cacheDir, TEMP: f.cacheDir, TMPDIR: f.cacheDir,
     CLAUDE_CONFIG_DIR: claudeDir,
     NODE_EXTRA_CA_CERTS: fileURLToPath(new URL('./fixtures/proxy-cert.pem', import.meta.url)),
     GLM_STATUSLINE_CONFIG: installed.configPath });
-  const run = promisify(execFile);
   const script = path.join(installed.installDir, 'statusline.mjs');
-  const query = await run(process.execPath, [script, '--query'], { env, timeout: 5000 });
+  return (...args) => {
+    const run = promisify(execFile)(process.execPath, [script, ...args], { env, timeout: 10000 });
+    if (!args.length) run.child.stdin.end('{}');
+    return run;
+  };
+}
+
+test('installed CLI reads proxies from Claude settings for query and status line', async (t) => {
+  const f = await fixture(t);
+  const run = await installedGlm(f, { cacheTtlSeconds: 0 });
+  const query = await run('--query');
   assert.equal(JSON.parse(query.stdout).five.usedPct, 38);
-  const rendering = run(process.execPath, [script], { env, timeout: 5000 });
-  rendering.child.stdin.end('{}');
-  assert.match((await rendering).stdout, /5h 62%/);
+  assert.match((await run()).stdout, /5h 62%/);
   assert.equal(f.tunnels.length, 4);
+});
+
+test('expired cache renders before the proxy responds and concurrent CLI calls share the detached refresh', async (t) => {
+  let calls = 0, allowResponse, signalRequest;
+  const paused = new Promise((resolve) => { allowResponse = resolve; });
+  const workerRequested = new Promise((resolve) => { signalRequest = resolve; });
+  const f = await fixture(t, { handler: async (req, res) => {
+    const call = ++calls;
+    assert.equal(req.headers.authorization, 'fixture-api-key');
+    if (call === 2) { signalRequest(); await paused; }
+    const percentage = call === 1 ? 38 : call === 2 ? 20 : 10;
+    res.end(JSON.stringify({ data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage }] } }));
+  } });
+  const run = await installedGlm(f, { glm: { showBalance: false }, timeoutMs: 15000 });
+  assert.match((await run()).stdout, /5h 62%/);
+  const cacheDir = path.join(f.cacheDir, 'glm-statusline-v2');
+  const cacheFile = path.join(cacheDir, (await fs.readdir(cacheDir)).find((name) => name.endsWith('.json')));
+  const readCache = async () => JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+  const expired = await readCache();
+  expired.plan.updatedAt = expired.plan.attemptAt = Date.now() - 90000;
+  await fs.writeFile(cacheFile, JSON.stringify(expired));
+  try {
+    // The stalled response cannot finish until both renderers have exited.
+    for (const result of await Promise.all([run(), run()])) {
+      assert.match(result.stdout, /5h 62%/);
+      assert.match(result.stdout, /cached/);
+    }
+    await Promise.race([workerRequested, delay(8000, null, { ref: false }).then(() => {
+      throw new Error('background request did not reach the proxy');
+    })]);
+    assert.equal(calls, 2);
+  } finally {
+    allowResponse();
+  }
+  for (let i = 0; i < 200 && (await fs.readdir(cacheDir)).some((name) => name.endsWith('.lock')); i++) {
+    await delay(25);
+  }
+  assert.equal((await readCache()).plan.value.five.usedPct, 20);
+  assert.match((await run()).stdout, /5h 80%/);
+  assert.equal(JSON.parse((await run('--query')).stdout).five.usedPct, 10);
+  assert.equal(calls, 3);
 });

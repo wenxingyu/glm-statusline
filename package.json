@@ -1,6 +1,6 @@
 {
   "name": "@wenxingyu/glm-statusline",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Claude Code status line with automatic GLM, DeepSeek and MiniMax detection, quota, balance and session usage",
   "keywords": [
     "claude-code",

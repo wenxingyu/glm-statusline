@@ -21,11 +21,12 @@ export function parseDeepSeekBalance(body) {
 }
 
 export async function getDeepSeekInfo({ key, ttlSec = 60, staleSec = 1800,
-  timeoutMs = 5000, force = false, proxyEnv = process.env,
+  timeoutMs = 5000, force = false, proxyEnv = process.env, scheduleRefresh, inheritedLock,
   cacheDir = path.join(os.tmpdir(), 'glm-statusline-v2') }) {
   const hash = createHash('sha256').update(String(key)).digest('hex');
   const file = path.join(cacheDir, `deepseek-${hash}.json`);
   const { value, ...info } = await cachedQuery({ file, field: 'balances', ttlSec, staleSec, force,
+    scheduleRefresh, inheritedLock,
     valid: (balances) => Array.isArray(balances) && balances.length > 0 &&
       balances.every((b) => ['CNY', 'USD'].includes(b?.currency) && Number.isFinite(b.balance)),
     errorMessage: '余额查询失败',

@@ -118,6 +118,22 @@ test('corrupt caches rebuild safely and do not store transcript text', async (t)
   assert.equal((await s.query()).total, 150);
 });
 
+test('old checkpoints gain a summary and unchanged transcripts skip opening the full cache', async (t) => {
+  const s = await setup(t, [assistant('a')]);
+  const initial = await s.query();
+  const file = await s.cacheFile();
+  await fs.unlink(`${file}.summary`);
+  const old = JSON.parse(await fs.readFile(file, 'utf8'));
+  delete old.ctime;
+  await fs.writeFile(file, JSON.stringify(old));
+  assert.deepEqual(await s.query(), initial);
+  const read = fs.readFile;
+  const reads = t.mock.method(fs, 'readFile', (...args) => read(...args));
+  assert.deepEqual(await s.query(), initial);
+  assert.ok(reads.mock.calls.some(({ arguments: [name] }) => name === `${file}.summary`));
+  assert.ok(!reads.mock.calls.some(({ arguments: [name] }) => name === file));
+});
+
 test('scan budget persists progress and completes on following invocations', async (t) => {
   const records = Array.from({ length: 6000 }, (_, i) => assistant(String(i)));
   const s = await setup(t, records);

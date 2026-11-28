@@ -94,3 +94,21 @@ test('live refresh lock returns cached data without another API request', async 
   assert.equal(info.stale, true);
   assert.equal(s.requests.length, 1);
 });
+
+test('only usable expired balances are eligible for background refresh', async (t) => {
+  const s = await setup(t);
+  let scheduled = 0;
+  const scheduleRefresh = async () => { scheduled++; return false; };
+  await s.query({ scheduleRefresh });
+  assert.equal(scheduled, 0); // cold cache
+  s.tick(61000);
+  s.data(body('12.34'));
+  assert.equal((await s.query({ scheduleRefresh })).balances[0].balance, 12.34);
+  assert.equal(scheduled, 1); // if the worker fails to start, query in the foreground
+  s.tick(61000);
+  await s.query({ scheduleRefresh, staleSec: 30 });
+  await s.query({ scheduleRefresh, ttlSec: 0 });
+  await s.query({ scheduleRefresh, force: true });
+  assert.equal(scheduled, 1);
+  assert.equal(s.requests.length, 5);
+});

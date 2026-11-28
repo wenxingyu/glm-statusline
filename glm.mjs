@@ -22,7 +22,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { writeCache, acquireLock, recoverLock } from './cache.mjs';
+import { writeCache, acquireLock, recoverLock, canRefreshInBackground } from './cache.mjs';
 import { fetchWithProxy } from './proxy.mjs';
 
 const CACHE_DIR = path.join(os.tmpdir(), 'glm-statusline-v2');
@@ -186,6 +186,8 @@ export async function getGlmInfo({
   force = false,
   cacheDir = CACHE_DIR,
   proxyEnv = process.env,
+  scheduleRefresh,
+  inheritedLock,
 }) {
   platform = platform === 'en' ? 'en' : 'cn';
   const hash = createHash('sha256').update(String(key)).digest('hex');
@@ -193,11 +195,12 @@ export async function getGlmInfo({
   const needBalance = platform === 'cn' && showBalance;
   const show = (cache, refreshing = false, updated = []) => present(cache, Date.now(),
     { needBalance, ttlSec, staleSec, refreshing, updated });
+  let release = inheritedLock ? await acquireLock(file, { inherit: true }) : null;
   let prev = await readCache(file);
   const due = (entry) => force || !fresh(entry, Date.now(), ttlSec);
-  if (!due(prev.plan) && (!needBalance || !due(prev.balance))) return show(prev);
+  if (!due(prev.plan) && (!needBalance || !due(prev.balance))) { await release?.(); return show(prev); }
 
-  let release = await acquireLock(file);
+  release ??= await acquireLock(file);
   if (!release) {
     await recoverLock(file);
     release = await acquireLock(file);
@@ -206,10 +209,20 @@ export async function getGlmInfo({
   try {
     // 获取锁前可能已有另一个进程完成了刷新。
     prev = await readCache(file);
+    const duePlan = due(prev.plan);
+    const dueBalance = needBalance && due(prev.balance);
+    if (!duePlan && !dueBalance) return show(prev);
+    if (!force && scheduleRefresh && release.handoff &&
+      (!duePlan || canRefreshInBackground(prev.plan, ttlSec, staleSec)) &&
+      (!dueBalance || canRefreshInBackground(prev.balance, ttlSec, staleSec)) &&
+      await scheduleRefresh(release.handoff)) {
+      release = null;
+      return show(prev, true);
+    }
     const [plan, balance] = await Promise.all([
-      due(prev.plan) ? refresh(`${PLATFORM_BASE[platform]}/api/monitor/usage/quota/limit`,
+      duePlan ? refresh(`${PLATFORM_BASE[platform]}/api/monitor/usage/quota/limit`,
         { Authorization: key }, parsePlan, prev.plan, timeoutMs, proxyEnv) : prev.plan,
-      needBalance && due(prev.balance) ? refresh(BALANCE_URL,
+      dueBalance ? refresh(BALANCE_URL,
         { Authorization: `Bearer ${key}` }, parseBalance, prev.balance, timeoutMs, proxyEnv) : prev.balance,
     ]);
     const cache = { plan: plan ?? null, balance: balance ?? null };
@@ -218,7 +231,7 @@ export async function getGlmInfo({
       .filter((entry) => entry && !entry.error);
     return show(cache, false, updated);
   } finally {
-    await release();
+    await release?.();
   }
 }
 

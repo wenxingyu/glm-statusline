@@ -15,11 +15,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getGlmInfo } from './glm.mjs';
-import { proxyEnvironment } from './proxy.mjs';
-import { getDeepSeekInfo } from './deepseek.mjs';
-import { getMiniMaxInfo } from './minimax.mjs';
-import { tokenTotals, generationSpeed } from './tokens.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROVIDERS = ['glm', 'deepseek', 'minimax'];
@@ -236,7 +231,12 @@ async function readStdinJson() {
   if (process.stdin.isTTY) return {};
   return new Promise((resolve) => {
     let data = '';
+    const collect = (chunk) => { data += chunk; };
     const done = () => {
+      clearTimeout(timer);
+      process.stdin.removeListener('data', collect);
+      process.stdin.removeListener('end', done);
+      process.stdin.pause();
       try {
         resolve(JSON.parse(data));
       } catch {
@@ -244,9 +244,10 @@ async function readStdinJson() {
       }
     };
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (c) => (data += c));
-    process.stdin.on('end', done);
-    setTimeout(done, 1500).unref(); // 手动运行且未管道输入时兜底
+    const timer = setTimeout(done, 1500);
+    timer.unref(); // 手动运行且未管道输入时兜底
+    process.stdin.on('data', collect);
+    process.stdin.once('end', done);
   });
 }
 
@@ -306,29 +307,41 @@ async function contextTokens(transcriptPath) {
   try {
     const { size } = await fh.stat();
     const max = Math.min(size, 4 * 1024 * 1024);
-    for (let len = Math.min(max, 128 * 1024); len > 0;) {
-      const start = size - len;
-      const buf = Buffer.alloc(len);
+    const buf = Buffer.allocUnsafe(max);
+    let end = max;
+    const inspect = (start) => {
+      try {
+        const record = JSON.parse(buf.toString('utf8', start, end));
+        if (record.isSidechain) return undefined;
+        if (record.type === 'system' && record.subtype === 'compact_boundary') return null;
+        if (record.type === 'assistant' || record.message?.role === 'assistant') {
+          return inputTokens(record.message?.usage) ?? undefined;
+        }
+      } catch { /* 截断或尚未写完的 JSON 行，跳过 */ }
+      return undefined;
+    };
+    for (let high = max, span = 128 * 1024; high > 0;) {
+      const low = Math.max(0, high - span);
       let read = 0;
-      while (read < len) {
-        const { bytesRead } = await fh.read(buf, read, len - read, start + read);
-        if (!bytesRead) break;
+      while (read < high - low) {
+        const { bytesRead } = await fh.read(buf, low + read, high - low - read, size - max + low + read);
+        if (!bytesRead) return null; // transcript 在扫描期间被截断
         read += bytesRead;
       }
-      const lines = buf.subarray(0, read).toString('utf8').split('\n');
-      for (let i = lines.length - 1; i >= (start > 0 ? 1 : 0); i--) {
-        try {
-          const record = JSON.parse(lines[i]);
-          if (record.isSidechain) continue;
-          if (record.type === 'system' && record.subtype === 'compact_boundary') return null;
-          if (record.type !== 'assistant' && record.message?.role !== 'assistant') continue;
-          const used = inputTokens(record.message?.usage);
-          if (used != null) return used;
-        } catch { /* 截断或尚未写完的 JSON 行，跳过 */ }
+      // 只搜索新读入的片段。跨片段的行在找到前一个换行符后完整解析。
+      const chunk = buf.subarray(low, high);
+      for (let i = chunk.lastIndexOf(10); i !== -1; i = i > 0 ? chunk.lastIndexOf(10, i - 1) : -1) {
+        const start = low + i + 1;
+        if (start < end) {
+          const value = inspect(start);
+          if (value !== undefined) return value;
+        }
+        end = start - 1;
       }
-      if (len === max) break;
-      len = Math.min(max, len * 2);
+      span = max - low;
+      high = low;
     }
+    if (size === max && end > 0) return inspect(0) ?? null;
   } catch {
     return null;
   } finally {
@@ -447,14 +460,50 @@ function credentialMessage(provider, credential, lang) {
     : `${name} ${lang === 'zh' ? '未配置 Key' : 'no key'}`;
 }
 
-function queryProvider(provider, config, env, key, force = false) {
+async function requestProvider(provider, options) {
+  if (provider === 'glm') return (await import('./glm.mjs')).getGlmInfo(options);
+  if (provider === 'minimax') return (await import('./minimax.mjs')).getMiniMaxInfo(options);
+  return (await import('./deepseek.mjs')).getDeepSeekInfo(options);
+}
+
+async function startQuotaRefresh(provider, options, handoff) {
+  let child;
+  try {
+    const { spawn } = await import('node:child_process');
+    child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--refresh-worker'], {
+      detached: true, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    // 先转交锁，再通过 stdin 发送参数。Key 和代理凭据无需出现在命令行或临时文件中。
+    const started = new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.on('error', reject);
+      child.stdin.on('error', reject);
+    });
+    await started;
+    await handoff(child.pid);
+    await new Promise((resolve, reject) => {
+      child.stdin.once('error', reject);
+      child.stdin.end(JSON.stringify({ provider, options }), (error) => error ? reject(error) : resolve());
+    });
+    return true;
+  } catch {
+    child?.stdin?.destroy();
+    return false;
+  } finally {
+    child?.unref();
+  }
+}
+
+async function queryProvider(provider, config, env, key, force = false, background = false) {
+  const { proxyEnvironment } = await import('./proxy.mjs');
   const options = { key, ttlSec: config.cacheTtlSeconds, staleSec: config.staleSeconds,
     timeoutMs: config.timeoutMs, proxyEnv: proxyEnvironment(env), force };
-  if (provider === 'glm') return getGlmInfo({ ...options,
+  if (provider === 'glm') Object.assign(options, {
     platform: resolvePlatform(config, env), showBalance: config.glm.showBalance });
-  if (provider === 'minimax') return getMiniMaxInfo({ ...options,
+  if (provider === 'minimax') Object.assign(options, {
     platform: resolveMiniMaxPlatform(config, env), model: config.minimax.model, level: config.minimax.level });
-  return getDeepSeekInfo(options);
+  const scheduleRefresh = background ? (handoff) => startQuotaRefresh(provider, options, handoff) : undefined;
+  return requestProvider(provider, { ...options, scheduleRefresh });
 }
 
 function demoInfo(provider) {
@@ -465,26 +514,39 @@ function demoInfo(provider) {
     weekly: { usedPct: 12, resetMs: now + 82 * 3600000 }, balance: 46.2 };
 }
 
-export async function render(input, config) {
+export async function render(input, config, { background = false } = {}) {
   if (!input || typeof input !== 'object') input = {};
   config = { ...config, lang: resolveLanguage(config.lang) };
   const t = L[config.lang];
   const cwd = [input.workspace?.current_dir, input.cwd, input.worktree?.path]
     .find((dir) => typeof dir === 'string' && dir.length > 0) ?? process.cwd();
-  const env = config.segments.some((s) => s === 'auto' || PROVIDERS.includes(s)) && !config._demo
-    ? await loadClaudeSettingsEnv() : {};
-  config = { ...config, segments: resolveSegments(config, env) };
-  // 在 auto 解析和去重之后计数，同一家服务商不会因重复配置触发完整名称。
-  config._showProvider = config.segments.filter((s) => PROVIDERS.includes(s)).length > 1;
-  const platform = resolvePlatform(config, env);
   const parts = {};
   const totalsPromise = config.segments.some((s) => ['tok', 'speed'].includes(s))
     ? (config._demo ? { total: 11_900_000, input: 104700, output: 94500,
       cacheRead: 11_700_000, cacheCreation: 800, samples: [{ tokens: 1500, ms: 10000 }] }
-      : tokenTotals(input.transcript_path)) : null;
+      : input.transcript_path ? import('./tokens.mjs').then(({ tokenTotals }) => tokenTotals(input.transcript_path)) : null)
+    : null;
+  const providersPromise = config.segments.some((s) => s === 'auto' || PROVIDERS.includes(s))
+    ? (async () => {
+      const env = config._demo ? {} : await loadClaudeSettingsEnv();
+      const segments = resolveSegments(config, env);
+      const providers = segments.filter((s) => PROVIDERS.includes(s));
+      const providerConfig = { ...config, _showProvider: providers.length > 1 };
+      const platform = resolvePlatform(config, env);
+      await Promise.all(providers.map(async (seg) => {
+        const credential = config._demo ? null : resolveCredential(seg, env);
+        if (credential && !credential.key) {
+          parts[seg] = paint(credentialMessage(seg, credential, config.lang), C.yellow);
+          return;
+        }
+        const info = config._demo ? demoInfo(seg) : await queryProvider(seg, config, env, credential.key, false, background);
+        parts[seg] = { glm: renderGlm, deepseek: renderDeepSeek, minimax: renderMiniMax }[seg](info, providerConfig, platform);
+      }));
+      return segments;
+    })() : config.segments;
 
   // 各分段的 I/O 独立进行，最终仍按配置顺序输出；tok/speed 共用一次扫描。
-  await Promise.all(config.segments.map(async (seg) => {
+  const localParts = Promise.all(config.segments.map(async (seg) => {
     switch (seg) {
       case 'model': {
         const name = input.model?.display_name || input.model?.id || '';
@@ -523,31 +585,28 @@ export async function render(input, config) {
       }
       case 'speed': {
         const totals = await totalsPromise;
-        const speed = generationSpeed(totals?.samples, config.speedSamples);
+        const speed = totals?.samples.length
+          ? (await import('./tokens.mjs')).generationSpeed(totals.samples, config.speedSamples) : null;
         parts.speed = speed === null ? paint('-- tok/s', C.dim) : paint(`${Math.round(speed)} tok/s`, C.cyan);
-        break;
-      }
-      case 'minimax':
-      case 'deepseek':
-      case 'glm': {
-        const credential = config._demo ? null : resolveCredential(seg, env);
-        if (credential && !credential.key) {
-          parts[seg] = paint(credentialMessage(seg, credential, config.lang), C.yellow);
-          break;
-        }
-        const info = config._demo ? demoInfo(seg) : await queryProvider(seg, config, env, credential.key);
-        parts[seg] = { glm: renderGlm, deepseek: renderDeepSeek, minimax: renderMiniMax }[seg](info, config, platform);
         break;
       }
     }
   }));
 
-  return config.segments.map((s) => parts[s]).filter(Boolean).join(paint(' | ', C.dim));
+  const [segments] = await Promise.all([providersPromise, localParts]);
+  return segments.map((s) => parts[s]).filter(Boolean).join(paint(' | ', C.dim));
 }
 
 // ── 入口 ────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === '--refresh-worker') {
+    const request = await readStdinJson();
+    if (PROVIDERS.includes(request?.provider) && request.options?.key) {
+      await requestProvider(request.provider, { ...request.options, inheritedLock: true });
+    }
+    return;
+  }
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`glm-statusline — Claude Code 的额度、余额与会话用量状态栏
 
@@ -584,9 +643,8 @@ async function main() {
     console.log('重启 Claude Code 或开启新会话即可生效。');
     return;
   }
-  const config = await loadConfig();
-
   if (process.argv.includes('--demo')) {
+    const config = await loadConfig();
     const fake = {
       model: { display_name: 'GLM-4.6' },
       workspace: { current_dir: process.cwd() },
@@ -597,7 +655,7 @@ async function main() {
   }
 
   if (process.argv.includes('--query')) {
-    const env = await loadClaudeSettingsEnv();
+    const [config, env] = await Promise.all([loadConfig(), loadClaudeSettingsEnv()]);
     const providers = resolveSegments(config, env).filter((s) => PROVIDERS.includes(s));
     if (!providers.length) throw new Error(config.segments.includes('auto')
       ? 'auto 无法识别 ANTHROPIC_BASE_URL；请配置支持的接口地址，或手动指定服务商分段及其专用 Key'
@@ -615,17 +673,22 @@ async function main() {
     return;
   }
 
-  const input = await readStdinJson();
-  const line = await render(input, config);
+  const [input, config] = await Promise.all([readStdinJson(), loadConfig()]);
+  const line = await render(input, config, { background: true });
   if (line) console.log(line);
 }
 
-const entryPath = process.argv[1] && await fs.realpath(process.argv[1]).catch(() => path.resolve(process.argv[1]));
-// Windows 的临时目录可能采用 8.3 短路径或不同大小写；两边使用同一 realpath 规则。
-const modulePath = await fs.realpath(fileURLToPath(import.meta.url)).catch(() => fileURLToPath(import.meta.url));
-const isMain = entryPath && (process.platform === 'win32'
-  ? entryPath.toLowerCase() === modulePath.toLowerCase() : entryPath === modulePath);
-if (isMain) main().catch((e) => {
+async function isEntryPoint(entry) {
+  if (!entry) return false;
+  const target = fileURLToPath(import.meta.url);
+  const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if (same(path.resolve(entry), target)) return true;
+  // npm 的符号链接和 Windows 的 8.3 短路径仍需解析两边的真实路径。
+  const [actualEntry, actualTarget] = await Promise.all([entry, target].map((p) => fs.realpath(p).catch(() => p)));
+  return same(actualEntry, actualTarget);
+}
+
+if (await isEntryPoint(process.argv[1])) main().catch((e) => {
   if (process.argv.length > 2) {
     console.error(e.message);
     process.exitCode = 1;

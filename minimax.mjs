@@ -48,12 +48,13 @@ function validValue(value) {
 }
 
 export async function getMiniMaxInfo({ key, platform = 'cn', model = 'auto', level = 'auto', ttlSec = 60,
-  staleSec = 1800, timeoutMs = 5000, force = false, proxyEnv = process.env,
+  staleSec = 1800, timeoutMs = 5000, force = false, proxyEnv = process.env, scheduleRefresh, inheritedLock,
   cacheDir = path.join(os.tmpdir(), 'glm-statusline-v2') }) {
   platform = platform === 'en' ? 'en' : 'cn';
   const hash = createHash('sha256').update(JSON.stringify([String(key), model])).digest('hex');
   const file = path.join(cacheDir, `minimax-${platform}-${hash}.json`);
   const { value, ...info } = await cachedQuery({ file, ttlSec, staleSec, force, valid: validValue,
+    scheduleRefresh, inheritedLock,
     errorMessage: 'MiniMax 额度查询失败',
     fetchValue: async () => {
       const res = await fetchWithProxy(`${MINIMAX_BASE[platform]}/v1/token_plan/remains`, {
